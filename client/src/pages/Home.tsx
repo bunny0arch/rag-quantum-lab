@@ -3,7 +3,7 @@ import { jsPDF } from "jspdf";
 import { AlertCircle, Archive, ArrowDown, Check, ChevronDown, Clipboard, Database, Download, FileText, Gauge, KeyRound, Layers3, Loader2, Orbit, RefreshCw, Search, Settings2, SlidersHorizontal, Sparkles, Trash2, UploadCloud, X } from "lucide-react";
 import { AdaptiveNav } from "@/components/ui/AdaptiveNav";
 import { trpc } from "@/lib/trpc";
-import type { DocumentRecord, IngestResult, ProjectedPoint, QueryRecord, WorkspaceSnapshot } from "@shared/types";
+import type { DocumentRecord, IngestResult, PipelineProgressEvent, ProjectedPoint, QueryRecord, WorkspaceSnapshot } from "@shared/types";
 
 const EmbeddingUniverse = lazy(() => import("@/components/scene/EmbeddingUniverse"));
 
@@ -113,12 +113,27 @@ export default function Home() {
   const [localError, setLocalError] = useState("");
   const [lastEvent, setLastEvent] = useState("");
   const [confirmedEvents, setConfirmedEvents] = useState<IngestResult["events"]>([]);
+  const [liveEvents, setLiveEvents] = useState<PipelineProgressEvent[]>([]);
   const [eventCursor, setEventCursor] = useState(-1);
   const [traceMode, setTraceMode] = useState<"idle" | "ingest" | "query">("idle");
 
+  useEffect(() => {
+    const source = new EventSource(`/api/rag/progress?workspaceId=${encodeURIComponent(workspaceId)}`);
+    source.addEventListener("progress", event => {
+      try {
+        const progress = JSON.parse((event as MessageEvent).data) as PipelineProgressEvent;
+        setLiveEvents(events => [...events.slice(-39), progress]);
+        setLastEvent(progress.message);
+      } catch {
+        // Ignore malformed progress frames; the completed mutation remains authoritative.
+      }
+    });
+    return () => source.close();
+  }, [workspaceId]);
+
   const snapshotQuery = trpc.rag.snapshot.useQuery({ workspaceId }, { refetchOnWindowFocus: false });
-  const ingestMutation = trpc.rag.ingest.useMutation({ onMutate: () => { setTraceMode("ingest"); setConfirmedEvents([]); setEventCursor(-1); setLastEvent("Upload accepted; awaiting server pipeline events"); }, onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => setLocalError(error.message) });
-  const indexMutation = trpc.rag.indexExtracted.useMutation({ onMutate: () => { setTraceMode("ingest"); setConfirmedEvents([]); setEventCursor(-1); setLastEvent("Re-index accepted; awaiting server pipeline events"); }, onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const ingestMutation = trpc.rag.ingest.useMutation({ onMutate: () => { setTraceMode("ingest"); setLiveEvents([]); setConfirmedEvents([]); setEventCursor(-1); setLastEvent("Upload accepted; streaming extraction progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setLiveEvents([]); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => { setLiveEvents([]); setLocalError(error.message); } });
+  const indexMutation = trpc.rag.indexExtracted.useMutation({ onMutate: () => { setTraceMode("ingest"); setLiveEvents([]); setConfirmedEvents([]); setEventCursor(-1); setLastEvent("Re-index accepted; streaming embedding progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setLiveEvents([]); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => { setLiveEvents([]); setLocalError(error.message); } });
   const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setTraceMode("query"); setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const removeMutation = trpc.rag.removeDocument.useMutation({ onSuccess: result => { setSnapshot(result); setSelectedChunkId(undefined); } });
 
@@ -150,7 +165,7 @@ export default function Home() {
   const operation = queryMutation.isPending ? "query" : (ingestMutation.isPending || indexMutation.isPending) ? "ingest" : activeQuery ? "answer" : indexedCount ? "ready" : current?.chunks.length ? "extracted" : "idle";
   const currentTone = localError ? "error" : isBusy ? "warn" : indexedCount ? "ready" : current?.chunks.length ? "warn" : "neutral";
   const surfaceTokens = lexicalTokens(question);
-  const visibleConfirmedEvents = confirmedEvents.slice(0, Math.max(0, eventCursor + 1));
+  const visibleConfirmedEvents = liveEvents.length ? liveEvents : confirmedEvents.slice(0, Math.max(0, eventCursor + 1));
 
   const ingestFiles = useCallback(async (files: File[]) => {
     if (!files.length) return;
@@ -215,7 +230,7 @@ export default function Home() {
 
         <section className={`causal-trace causal-trace--${traceMode}`} aria-live="polite" aria-label="Visual RAG causal trace">
           <div className="causal-trace__head"><span className="eyebrow">CAUSAL TRACE</span><span className="causal-trace__mode">{isBusy ? "live request / awaiting confirmation" : traceMode === "query" ? "confirmed query result" : traceMode === "ingest" ? "confirmed backend events" : "idle"}</span></div>
-          {traceMode === "ingest" ? <div className="ingest-event-stack">{isBusy && <><div className="trace-hold"><Loader2 size={13} className="spin" /><span>Server is processing. Exact progress is unavailable, so completion is not shown early.</span></div><div className="live-stage-sequence">{["extracting", "chunking", "embedding", "indexing"].map(stage => <span className="live-stage" key={stage}><i />{stage}<b>pending confirmation</b></span>)}</div></>}{visibleConfirmedEvents.map((event, index) => <div className="confirmed-event" key={`${event.at}-${index}`}><span className="confirmed-event__marker"><Check size={10} /></span><span><b>{event.stage}</b><small>{event.message}</small></span><time>{new Date(event.at).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })}</time></div>)}</div> : traceMode === "query" && question.trim() ? <div className="query-causal-trace"><div className="token-line"><span className="token-line__label">surface tokens</span>{surfaceTokens.slice(0, 28).map((token, index) => <span className={`query-token ${isBusy ? "is-processing" : "is-confirmed"}`} key={`${token}-${index}`}>{token}</span>)}{surfaceTokens.length > 28 && <span className="query-token">…</span>}</div><div className="query-route"><span className="query-route__node is-done">text</span><i /><span className={`query-route__node ${isBusy ? "is-running" : "is-done"}`}>embedding request</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : isBusy ? "is-running" : ""}`}>query vector</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : ""}`}>nearest chunks</span></div><div className="query-vector-readout">{isBusy ? <><Loader2 size={12} className="spin" /> Provider embedding pending — no query point is placed yet.</> : activeQuery ? <><Sparkles size={12} /> Query vector placed from the provider response; {activeQuery.results.length} actual result{activeQuery.results.length === 1 ? "" : "s"} converge in the field.</> : "Enter a question to start the query trace."}</div></div> : <div className="trace-idle">Upload a source or ask a question. The field only advances when the backend returns evidence.</div>}
+          {traceMode === "ingest" ? <div className="ingest-event-stack">{isBusy && <div className="trace-hold"><Loader2 size={13} className="spin" /><span>{liveEvents.length ? "Streaming confirmed server progress — each embedding updates as its chunk completes." : "Opening the live server progress channel…"}</span></div>}{visibleConfirmedEvents.map((event, index) => <div className="confirmed-event" key={`${event.at}-${index}`}><span className="confirmed-event__marker"><Check size={10} /></span><span><b>{event.stage}</b><small>{event.message}{event.percentage !== undefined ? ` · ${event.percentage}%` : ""}</small></span><time>{new Date(event.at).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })}</time></div>)}</div> : traceMode === "query" && question.trim() ? <div className="query-causal-trace"><div className="token-line"><span className="token-line__label">surface tokens</span>{surfaceTokens.slice(0, 28).map((token, index) => <span className={`query-token ${isBusy ? "is-processing" : "is-confirmed"}`} key={`${token}-${index}`}>{token}</span>)}{surfaceTokens.length > 28 && <span className="query-token">…</span>}</div><div className="query-route"><span className="query-route__node is-done">text</span><i /><span className={`query-route__node ${isBusy ? "is-running" : "is-done"}`}>embedding request</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : isBusy ? "is-running" : ""}`}>query vector</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : ""}`}>nearest chunks</span></div><div className="query-vector-readout">{isBusy ? <><Loader2 size={12} className="spin" /> Provider embedding pending — no query point is placed yet.</> : activeQuery ? <><Sparkles size={12} /> Query vector placed from the provider response; {activeQuery.results.length} actual result{activeQuery.results.length === 1 ? "" : "s"} converge in the field.</> : "Enter a question to start the query trace."}</div></div> : <div className="trace-idle">Upload a source or ask a question. The field only advances when the backend returns evidence.</div>}
         </section>
 
         <section className="floating-method" aria-label="Visualization method"><span className="mono">METHOD</span><span>HIGH-DIMENSIONAL EMBEDDINGS</span><span className="method-separator">→</span><span>3D PCA-STYLE VIEW</span></section>

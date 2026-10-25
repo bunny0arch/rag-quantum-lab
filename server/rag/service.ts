@@ -10,6 +10,7 @@ import type {
   QueryRecord,
   QueryResult,
   RetrievalCandidate,
+  PipelineProgressEvent,
   WorkspaceSnapshot,
 } from "@shared/types";
 
@@ -33,6 +34,21 @@ type PcaModel = {
 };
 
 const workspaces = new Map<string, Workspace>();
+const progressListeners = new Map<string, Set<(event: PipelineProgressEvent) => void>>();
+
+export function subscribeToProgress(workspaceId: string, listener: (event: PipelineProgressEvent) => void) {
+  const listeners = progressListeners.get(workspaceId) || new Set();
+  listeners.add(listener);
+  progressListeners.set(workspaceId, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) progressListeners.delete(workspaceId);
+  };
+}
+
+function publishProgress(event: PipelineProgressEvent) {
+  progressListeners.get(event.workspaceId)?.forEach(listener => listener(event));
+}
 
 function getWorkspace(workspaceId: string): Workspace {
   const existing = workspaces.get(workspaceId);
@@ -132,11 +148,11 @@ function chunkText(text: string, documentId: string, sourceName: string, locatio
   return chunks;
 }
 
-async function geminiEmbed(apiKey: string, model: string, text: string): Promise<number[]> {
+async function geminiEmbed(apiKey: string, model: string, text: string, taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY"): Promise<number[]> {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:embedContent`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify({ content: { parts: [{ text }] } }),
+    body: JSON.stringify({ content: { parts: [{ text }] }, taskType }),
   });
   if (!response.ok) {
     throw new Error(`Embedding provider rejected the request (${response.status}). Check the key, model, quota, or network connection.`);
@@ -148,11 +164,13 @@ async function geminiEmbed(apiKey: string, model: string, text: string): Promise
 }
 
 async function geminiGenerate(apiKey: string, model: string, question: string, results: RetrievalCandidate[]): Promise<string> {
-  const evidence = results.map(result => `[${result.id}] ${result.sourceName} — ${result.location}\n${result.text}`).join("\n\n");
+  const evidence = results.map(result => `[${result.id}] rank=${result.rank} similarity=${result.score.toFixed(4)} source=${result.sourceName} location=${result.location}\n${result.text}`).join("\n\n");
   const prompt = [
-    "You are the grounded generation stage of an academic RAG laboratory.",
-    "Answer only from the supplied evidence. If the evidence does not support a reliable answer, say that the evidence is insufficient.",
-    "Use concise paragraphs or bullets where useful. Attach source IDs in square brackets after claims, for example [doc-c001]. Do not invent sources.",
+    "You are the grounded generation stage of an academic RAG laboratory. The evidence blocks below are the only source of truth for this answer.",
+    "Read and compare every supplied evidence block before answering. Synthesize the answer from those chunks; do not answer from general knowledge, assumptions, or the similarity score.",
+    "Every factual claim must be followed by one or more source IDs in square brackets, for example [doc-c001]. Never invent a source ID or citation.",
+    "If the chunks do not directly support the question, say exactly: 'The indexed evidence is insufficient to answer this reliably.' Then briefly state what is missing.",
+    "Be concise but complete. Distinguish explicit evidence from a cautious inference, and label any inference as such.",
     `Question: ${question}`,
     "Evidence:",
     evidence || "(No evidence retrieved.)",
@@ -249,8 +267,19 @@ function toSnapshot(workspaceId: string, workspace: Workspace): WorkspaceSnapsho
   };
 }
 
-function event(documentId: string, stage: PipelineStage, message: string) {
-  return { documentId, stage, message, at: now() };
+function event(workspaceId: string, operationId: string, documentId: string, stage: PipelineStage, message: string, progress?: { current?: number; total?: number }) {
+  const payload: PipelineProgressEvent = {
+    workspaceId,
+    operationId,
+    documentId,
+    stage,
+    message,
+    ...progress,
+    ...(progress?.current !== undefined && progress?.total ? { percentage: Math.round((progress.current / progress.total) * 100) } : {}),
+    at: now(),
+  };
+  publishProgress(payload);
+  return payload;
 }
 
 function configuredGeminiKey(override?: string) {
@@ -274,6 +303,7 @@ export async function ingestFiles(input: {
   const totalBytes = input.files.reduce((sum, file) => sum + file.size, 0);
   if (totalBytes > 25 * 1024 * 1024) throw new Error("The combined upload exceeds the 25 MB session limit.");
   const workspace = getWorkspace(input.workspaceId);
+  const operationId = nanoid(12);
   const events: IngestResult["events"] = [];
   const embeddingModel = cleanModelName(input.embeddingModel, "gemini-embedding-001");
   const apiKey = input.apiKey === null ? undefined : input.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
@@ -295,24 +325,29 @@ export async function ingestFiles(input: {
       createdAt: now(),
     };
     workspace.documents.unshift(document);
-    events.push(event(documentId, "validating", `Validated ${file.name}`));
+    events.push(event(input.workspaceId, operationId, documentId, "validating", `Validated ${file.name}`, { current: 0, total: input.files.length }));
     try {
       if (duplicate) throw new Error("This filename and byte size already exist in the session.");
       document.stage = "extracting";
-      events.push(event(documentId, "extracting", `Extracting content from ${file.name}`));
+      events.push(event(input.workspaceId, operationId, documentId, "extracting", `Extracting content from ${file.name}`));
       const extracted = await extractText(file);
       if (!extracted.text) throw new Error("No text was extracted from this file.");
       document.extractedChars = extracted.text.length;
+      events.push(event(input.workspaceId, operationId, documentId, "extracting", `Extracted ${extracted.text.length.toLocaleString()} characters from ${file.name}`));
       document.stage = "chunking";
-      events.push(event(documentId, "chunking", "Creating deterministic chunks with source offsets"));
+      events.push(event(input.workspaceId, operationId, documentId, "chunking", "Creating deterministic chunks with source offsets"));
       const chunks = chunkText(extracted.text, documentId, file.name, extracted.location, input.chunkSize, input.overlap);
       if (!chunks.length) throw new Error("The extracted document produced no non-empty chunks.");
       document.chunkCount = chunks.length;
+      events.push(event(input.workspaceId, operationId, documentId, "chunking", `Created ${chunks.length} deterministic chunks`, { current: chunks.length, total: chunks.length }));
       if (apiKey) {
         document.stage = "embedding";
-        events.push(event(documentId, "embedding", `Embedding ${chunks.length} chunks with ${embeddingModel}`));
+        events.push(event(input.workspaceId, operationId, documentId, "embedding", `Embedding 0/${chunks.length} chunks with ${embeddingModel}`, { current: 0, total: chunks.length }));
         const started = Date.now();
-        for (const chunk of chunks) chunk.embedding = await geminiEmbed(apiKey, embeddingModel, chunk.text);
+        for (const [index, chunk] of chunks.entries()) {
+          chunk.embedding = await geminiEmbed(apiKey, embeddingModel, chunk.text, "RETRIEVAL_DOCUMENT");
+          events.push(event(input.workspaceId, operationId, documentId, "embedding", `Embedded chunk ${index + 1}/${chunks.length}`, { current: index + 1, total: chunks.length }));
+        }
         const existingDimension = workspace.chunks.find(chunk => chunk.embedding)?.embedding?.length;
         const nextDimension = chunks[0]?.embedding?.length;
         if (existingDimension && nextDimension && existingDimension !== nextDimension) {
@@ -321,21 +356,21 @@ export async function ingestFiles(input: {
         workspace.chunks.push(...chunks);
         document.indexedChunkCount = chunks.length;
         document.stage = "indexing";
-        events.push(event(documentId, "indexing", `Indexed ${chunks.length} real vectors in ${Date.now() - started} ms`));
+        events.push(event(input.workspaceId, operationId, documentId, "indexing", `Indexed ${chunks.length} real vectors in ${Date.now() - started} ms`, { current: chunks.length, total: chunks.length }));
       } else {
         workspace.chunks.push(...chunks);
         document.stage = "ready";
         document.status = "extracted";
-        events.push(event(documentId, "ready", "Chunks ready; add a Gemini key to generate embeddings and index vectors"));
+        events.push(event(input.workspaceId, operationId, documentId, "ready", "Chunks ready; add a Gemini key to generate embeddings and index vectors"));
       }
       document.stage = "ready";
       document.status = apiKey ? "ready" : "extracted";
-      events.push(event(documentId, "ready", `${document.chunkCount} chunks available for inspection`));
+      events.push(event(input.workspaceId, operationId, documentId, "ready", `${document.chunkCount} chunks available for inspection`, { current: document.chunkCount, total: document.chunkCount }));
     } catch (error) {
       document.status = "error";
       document.stage = "error";
       document.error = error instanceof Error ? error.message : "Document processing failed.";
-      events.push(event(documentId, "error", document.error));
+      events.push(event(input.workspaceId, operationId, documentId, "error", document.error));
     }
   }
 
@@ -345,7 +380,7 @@ export async function ingestFiles(input: {
     indexed.forEach(chunk => { chunk.projection = applyPca(chunk.embedding!, workspace.projection!); });
   }
 
-  return { snapshot: toSnapshot(input.workspaceId, workspace), events };
+  return { snapshot: toSnapshot(input.workspaceId, workspace), operationId, events };
 }
 
 export async function queryWorkspace(input: {
@@ -369,7 +404,7 @@ export async function queryWorkspace(input: {
   if (workspace.embeddingModel && model !== workspace.embeddingModel) {
     throw new Error(`Embedding model mismatch: this index uses ${workspace.embeddingModel}. Reprocess the sources before querying with ${model}.`);
   }
-  const queryEmbedding = await geminiEmbed(apiKey, model, question);
+  const queryEmbedding = await geminiEmbed(apiKey, model, question, "RETRIEVAL_QUERY");
   const queryEmbeddingMs = Date.now() - embeddingStarted;
   const indexDimension = indexed[0]?.embedding?.length;
   if (indexDimension && queryEmbedding.length !== indexDimension) {
@@ -416,14 +451,19 @@ export async function queryWorkspace(input: {
 
 export async function indexExtractedChunks(input: { workspaceId: string; apiKey?: string; embeddingModel?: string }): Promise<IngestResult> {
   const workspace = getWorkspace(input.workspaceId);
+  const operationId = nanoid(12);
   const apiKey = configuredGeminiKey(input.apiKey);
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
   const pending = workspace.chunks.filter(chunk => !chunk.embedding);
   const events: IngestResult["events"] = [];
-  if (!pending.length) return { snapshot: toSnapshot(input.workspaceId, workspace), events };
+  if (!pending.length) return { snapshot: toSnapshot(input.workspaceId, workspace), operationId, events };
   const embedded: Array<{ chunk: InternalChunk; vector: number[] }> = [];
   try {
-    for (const chunk of pending) embedded.push({ chunk, vector: await geminiEmbed(apiKey, model, chunk.text) });
+    for (const [index, chunk] of pending.entries()) {
+      const vector = await geminiEmbed(apiKey, model, chunk.text, "RETRIEVAL_DOCUMENT");
+      embedded.push({ chunk, vector });
+      events.push(event(input.workspaceId, operationId, chunk.documentId, "embedding", `Embedded extracted chunk ${index + 1}/${pending.length}`, { current: index + 1, total: pending.length }));
+    }
     const existingDimension = workspace.chunks.find(chunk => chunk.embedding)?.embedding?.length;
     const nextDimension = embedded[0]?.vector.length;
     if (existingDimension && nextDimension && existingDimension !== nextDimension) {
@@ -439,7 +479,7 @@ export async function indexExtractedChunks(input: { workspaceId: string; apiKey?
       document.status = "ready";
       document.stage = "ready";
       document.indexedChunkCount = document.chunkCount;
-      events.push(event(document.id, "indexing", `Indexed ${count} extracted chunks with ${model}`));
+      events.push(event(input.workspaceId, operationId, document.id, "indexing", `Indexed ${count} extracted chunks with ${model}`, { current: document.indexedChunkCount, total: document.chunkCount }));
     });
   } catch (error) {
     throw new Error(error instanceof Error ? error.message : "Indexing extracted chunks failed.");
@@ -447,7 +487,7 @@ export async function indexExtractedChunks(input: { workspaceId: string; apiKey?
   const indexed = workspace.chunks.filter(chunk => chunk.embedding);
   workspace.projection = fitPca(indexed.map(chunk => chunk.embedding!));
   indexed.forEach(chunk => { chunk.projection = applyPca(chunk.embedding!, workspace.projection!); });
-  return { snapshot: toSnapshot(input.workspaceId, workspace), events };
+  return { snapshot: toSnapshot(input.workspaceId, workspace), operationId, events };
 }
 
 export function removeDocument(workspaceId: string, documentId: string) {

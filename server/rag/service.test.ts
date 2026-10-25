@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ingestFiles, removeDocument, snapshotWorkspace } from "./service";
+import { ingestFiles, removeDocument, snapshotWorkspace, subscribeToProgress } from "./service";
 
 const encoded = (content: string) => ({
   name: "capstone-notes.md",
@@ -44,5 +44,17 @@ describe("session RAG service", () => {
     expect(after.documents).toHaveLength(0);
     expect(after.chunks).toHaveLength(0);
     expect((await snapshotWorkspace(workspaceId)).chunks).toHaveLength(0);
+  });
+
+  it("publishes live extraction and chunk progress with a stable operation id", async () => {
+    const workspaceId = "service-test-progress";
+    const events: Array<{ operationId: string; stage: string; message: string }> = [];
+    const unsubscribe = subscribeToProgress(workspaceId, event => events.push(event));
+    const result = await ingestFiles({ workspaceId, apiKey: null, files: [encoded("streamed extraction content")] });
+    unsubscribe();
+    expect(events.length).toBeGreaterThanOrEqual(5);
+    expect(events.map(event => event.stage)).toEqual(expect.arrayContaining(["extracting", "chunking", "ready"]));
+    expect(new Set(events.map(event => event.operationId))).toEqual(new Set([result.operationId]));
+    expect(events.some(event => event.message.includes("Extracted"))).toBe(true);
   });
 });
