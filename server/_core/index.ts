@@ -8,7 +8,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 
-async function startServer() {
+export async function createApp(options: { serveClient?: boolean } = {}) {
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
@@ -27,12 +27,19 @@ async function startServer() {
       createContext,
     })
   );
-  // development mode uses Vite, production mode uses static files
+  // Development uses Vite. Vercel mounts the API separately and serves the
+  // Vite output from its static layer, so it must not mount a second client.
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
-  } else {
+  } else if (options.serveClient !== false) {
     serveStatic(app);
   }
+
+  return { app, server };
+}
+
+export async function startServer() {
+  const { app, server } = await createApp();
 
   const port = Number(process.env.PORT || "3000");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid PORT");
@@ -40,4 +47,6 @@ async function startServer() {
   server.listen(port, "0.0.0.0", () => console.log(`Server listening on port ${port}`));
 }
 
-startServer().catch(error => { console.error(error); process.exit(1); });
+if (!process.env.VERCEL) {
+  startServer().catch(error => { console.error(error); process.exit(1); });
+}
