@@ -6,7 +6,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { publicPlatformScript } from "./publicConfig";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
-import { serveStatic, setupVite } from "./vite";
+import { serveStatic } from "./static";
 
 export async function createApp(options: { serveClient?: boolean } = {}) {
   const app = express();
@@ -30,6 +30,7 @@ export async function createApp(options: { serveClient?: boolean } = {}) {
   // Development uses Vite. Vercel mounts the API separately and serves the
   // Vite output from its static layer, so it must not mount a second client.
   if (process.env.NODE_ENV === "development") {
+    const { setupVite } = await import("./vite");
     await setupVite(app, server);
   } else if (options.serveClient !== false) {
     serveStatic(app);
