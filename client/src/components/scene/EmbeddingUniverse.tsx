@@ -60,7 +60,7 @@ function AmbientField({ reducedMotion }: { reducedMotion: boolean }) {
       <bufferGeometry>
         <bufferAttribute attach="attributes-position" args={[positions, 3]} count={AMBIENT_COUNT} itemSize={3} />
       </bufferGeometry>
-      <pointsMaterial color="#596064" size={0.022} sizeAttenuation transparent opacity={0.6} />
+      <pointsMaterial color="#8faaa2" size={0.034} sizeAttenuation transparent opacity={0.82} />
     </points>
   );
 }
@@ -68,7 +68,7 @@ function AmbientField({ reducedMotion }: { reducedMotion: boolean }) {
 function Grid() {
   return (
     <group rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.35, 0]}>
-      <gridHelper args={[10, 18, "#2a3030", "#171b1b"]} rotation={[Math.PI / 2, 0, 0]} />
+      <gridHelper args={[64, 64, "#78988e", "#3b554e"]} rotation={[Math.PI / 2, 0, 0]} />
     </group>
   );
 }
@@ -82,9 +82,9 @@ function WaveBackdrop({ reducedMotion }: { reducedMotion: boolean }) {
     materialRef.current.uniforms.uPointer.value.lerp(new THREE.Vector2(pointer.x, pointer.y), 0.035);
   });
   return (
-    <mesh position={[0, 0, -12]} frustumCulled={false}>
+    <mesh position={[0, 0, -12]} renderOrder={-1000} frustumCulled={false}>
       <planeGeometry args={[50, 32]} />
-      <shaderMaterial ref={materialRef} uniforms={uniforms} transparent depthWrite={false} side={THREE.DoubleSide} vertexShader={`varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`} fragmentShader={`uniform float uTime; uniform vec2 uPointer; varying vec2 vUv; void main(){vec2 uv=vUv*2.0-1.0;float t=uTime*0.12;float w=sin(uv.x*3.4+t+uPointer.x*0.4)*0.11+sin(uv.y*4.2-t*0.7+uPointer.y*0.3)*0.08+sin((uv.x+uv.y)*6.0+t*0.45)*0.035;float horizon=smoothstep(0.9,-0.55,uv.y);vec3 graphite=vec3(0.008,0.012,0.012);vec3 sage=vec3(0.075,0.13,0.12);vec3 amber=vec3(0.16,0.105,0.045);vec3 color=graphite+sage*(0.34+0.22*w)*horizon+amber*max(0.0,w)*0.08;float vignette=1.0-smoothstep(0.25,1.25,length(uv*vec2(0.85,0.72)));gl_FragColor=vec4(color*vignette,0.92);}`} />
+      <shaderMaterial ref={materialRef} uniforms={uniforms} depthTest={false} depthWrite={false} side={THREE.DoubleSide} vertexShader={`varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`} fragmentShader={`uniform float uTime; uniform vec2 uPointer; varying vec2 vUv; void main(){vec2 uv=vUv*2.0-1.0;float t=uTime*0.12;float w=sin(uv.x*3.4+t+uPointer.x*0.4)*0.11+sin(uv.y*4.2-t*0.7+uPointer.y*0.3)*0.08+sin((uv.x+uv.y)*6.0+t*0.45)*0.035;float horizon=smoothstep(0.9,-0.55,uv.y);vec3 graphite=vec3(0.012,0.018,0.018);vec3 sage=vec3(0.12,0.20,0.18);vec3 amber=vec3(0.28,0.17,0.055);vec3 color=graphite+sage*(0.42+0.24*w)*horizon+amber*max(0.0,w)*0.11;float vignette=1.0-0.22*smoothstep(0.25,1.25,length(uv*vec2(0.85,0.72)));gl_FragColor=vec4(color*vignette,1.0);}`} />
     </mesh>
   );
 }
@@ -114,7 +114,8 @@ function SceneContents({ props }: { props: UniverseProps }) {
       props.points.forEach(point => box.expandByPoint(new THREE.Vector3(point.x * 2.8, point.y * 2.2, point.z * 2.8)));
       const center = box.getCenter(new THREE.Vector3());
       const radius = Math.max(2.5, box.getSize(new THREE.Vector3()).length() * 0.55);
-      camera.position.set(center.x + radius, center.y + radius * 0.55, center.z + radius);
+      const distance = Math.min(9.5, Math.max(5.2, radius / Math.tan(THREE.MathUtils.degToRad(42 / 2)) * 1.18));
+      camera.position.set(center.x + distance * 0.72, center.y + distance * 0.38, center.z + distance * 0.72);
       controlsRef.current?.target.copy(center);
       controlsRef.current?.update();
     }
@@ -125,7 +126,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
 
   return (
     <>
-      <PerspectiveCamera makeDefault position={[4.8, 2.4, 6.8]} fov={42}>
+      <PerspectiveCamera makeDefault position={[4.8, 2.4, 6.8]} fov={42} near={0.1} far={200}>
         <WaveBackdrop reducedMotion={props.reducedMotion} />
       </PerspectiveCamera>
       <ambientLight intensity={0.38} color="#c9d1ce" />
@@ -148,7 +149,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
               onClick={event => { event.stopPropagation(); props.onSelect(point); }}
             >
               <sphereGeometry args={[selected ? 0.105 : 0.07, 12, 12]} />
-              <meshStandardMaterial color={active ? "#d6a85e" : selected ? "#f3e7cc" : "#aab7b3"} emissive={active ? "#7e5724" : "#1c2523"} emissiveIntensity={active ? 1.2 : 0.25} roughness={0.52} metalness={0.55} />
+              <meshBasicMaterial color={active ? "#f0b95f" : selected ? "#fff4d6" : "#c2ddd5"} />
             </mesh>
           );
         })}
@@ -157,7 +158,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
         <>
           <mesh position={[props.queryProjection[0] * 2.8, props.queryProjection[1] * 2.2, props.queryProjection[2] * 2.8]}>
             <sphereGeometry args={[0.14, 16, 16]} />
-            <meshStandardMaterial color="#f4f0e7" emissive="#f4f0e7" emissiveIntensity={1.1} roughness={0.2} metalness={0.2} />
+            <meshBasicMaterial color="#fff8e9" />
           </mesh>
           <mesh position={[props.queryProjection[0] * 2.8, props.queryProjection[1] * 2.2, props.queryProjection[2] * 2.8]}>
             <ringGeometry args={[0.25, 0.29, 32]} />
@@ -165,9 +166,9 @@ function SceneContents({ props }: { props: UniverseProps }) {
           </mesh>
         </>
       )}
-      {queryPosition && retrievedPoints.map(point => <Line key={`link-${point.chunkId}`} points={[queryPosition, [point.x * 2.8, point.y * 2.2, point.z * 2.8]]} color="#d6a85e" lineWidth={0.55} transparent opacity={0.28} />)}
+      {queryPosition && retrievedPoints.map(point => <Line key={`link-${point.chunkId}`} points={[queryPosition, [point.x * 2.8, point.y * 2.2, point.z * 2.8]]} color="#f0b95f" lineWidth={0.9} transparent opacity={0.62} />)}
       </group>
-      <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} minDistance={2.6} maxDistance={14} makeDefault />
+      <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} minDistance={3.2} maxDistance={10.5} makeDefault />
     </>
   );
 }
@@ -175,7 +176,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
 export default function EmbeddingUniverse(props: UniverseProps) {
   return (
     <Canvas
-      dpr={[1, 2]}
+      dpr={[1, 1.5]}
       frameloop="always"
       gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
       onCreated={({ gl }) => {
