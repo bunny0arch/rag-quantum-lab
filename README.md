@@ -1,6 +1,6 @@
 # RAG Quantum Lab
 
-RAG Quantum Lab is an academic RAG observatory built on React, Three.js/React Three Fiber, Express, tRPC, and TypeScript. The interface opens directly into the working laboratory: source ingestion on the left, a 3D embedding universe in the center, and query/evidence/answer inspection on the right.
+RAG Quantum Lab is an academic RAG observatory built on React, Three.js/React Three Fiber, Express, tRPC, and TypeScript. The interface opens directly into a full-viewport vector field: sources, pipeline state, query composition, evidence, and answer inspection appear as lightweight floating instrument controls rather than a conventional dashboard grid.
 
 ## Run locally
 
@@ -20,7 +20,7 @@ Useful checks are `pnpm check` for TypeScript and `pnpm test` for the existing V
 
 ## Current pipeline
 
-The server performs real format detection, extraction, deterministic chunking, and source metadata capture. With a Gemini API key configured in the session UI, it sends chunks to the configured embedding model, stores the returned vectors in the session workspace, computes a deterministic PCA-style 3D projection using power iteration for visualization, ranks query results with cosine similarity over the original vectors, and sends the actual top-k evidence to the configured generation model. The client never receives raw embeddings or persists the key.
+The server performs real format detection, extraction, deterministic chunking, and source metadata capture. With a Gemini API key configured in the session UI, it sends chunks to the configured embedding model, stores the returned vectors in the session workspace, computes a deterministic PCA-style 3D projection using power iteration for visualization, ranks query results with cosine similarity over the original vectors, and sends the actual top-k evidence to the configured generation model. The client never receives raw embeddings or persists the key. The provided development credential was live-tested successfully with `gemini-embedding-001` (3072 dimensions) and `gemini-3.6-flash`.
 
 If a document is extracted before a key is configured, the source register exposes an explicit re-index action after the key is entered. Provider errors are surfaced as actionable status messages without echoing provider response bodies.
 

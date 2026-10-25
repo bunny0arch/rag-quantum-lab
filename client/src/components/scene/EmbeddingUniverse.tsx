@@ -1,5 +1,5 @@
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import type { ProjectedPoint } from "@shared/types";
@@ -34,13 +34,25 @@ function AmbientField({ reducedMotion }: { reducedMotion: boolean }) {
 
   useEffect(() => {
     if (reducedMotion) return;
-    let frame = 0;
+    let frame: number | undefined;
     const tick = () => {
       if (pointsRef.current) pointsRef.current.rotation.y += 0.00035;
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden" && frame !== undefined) {
+        cancelAnimationFrame(frame);
+        frame = undefined;
+      } else if (document.visibilityState === "visible" && frame === undefined) {
+        frame = requestAnimationFrame(tick);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [reducedMotion]);
 
   return (
@@ -63,7 +75,14 @@ function Grid() {
 
 function SceneContents({ props }: { props: UniverseProps }) {
   const controlsRef = useRef<any>(null);
+  const parallaxRef = useRef<THREE.Group>(null);
   const { camera } = useThree();
+
+  useFrame(({ pointer }) => {
+    if (props.reducedMotion || !parallaxRef.current) return;
+    parallaxRef.current.rotation.y += (pointer.x * 0.018 - parallaxRef.current.rotation.y) * 0.035;
+    parallaxRef.current.rotation.x += (-pointer.y * 0.012 - parallaxRef.current.rotation.x) * 0.035;
+  });
 
   useEffect(() => {
     if (props.resetToken > 0) {
@@ -91,6 +110,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
       <ambientLight intensity={0.38} color="#c9d1ce" />
       <pointLight position={[2, 4, 4]} intensity={3} distance={12} color="#d6a85e" />
       <pointLight position={[-4, 1, -2]} intensity={1.4} distance={10} color="#93a6a1" />
+      <group ref={parallaxRef}>
       <AmbientField reducedMotion={props.reducedMotion} />
       <Grid />
       <group>
@@ -124,6 +144,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
           </mesh>
         </>
       )}
+      </group>
       <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} minDistance={2.6} maxDistance={14} makeDefault />
     </>
   );

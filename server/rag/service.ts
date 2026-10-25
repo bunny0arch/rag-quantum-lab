@@ -269,7 +269,7 @@ export async function ingestFiles(input: {
   if (totalBytes > 25 * 1024 * 1024) throw new Error("The combined upload exceeds the 25 MB session limit.");
   const workspace = getWorkspace(input.workspaceId);
   const events: IngestResult["events"] = [];
-  const embeddingModel = cleanModelName(input.embeddingModel, "text-embedding-004");
+  const embeddingModel = cleanModelName(input.embeddingModel, "gemini-embedding-001");
   if (input.apiKey) workspace.embeddingModel = embeddingModel;
 
   for (const file of input.files) {
@@ -357,7 +357,7 @@ export async function queryWorkspace(input: {
   if (!indexed.length) throw new Error("No indexed vectors are available. Add a Gemini key and process a document first.");
 
   const embeddingStarted = Date.now();
-  const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "text-embedding-004");
+  const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
   if (workspace.embeddingModel && model !== workspace.embeddingModel) {
     throw new Error(`Embedding model mismatch: this index uses ${workspace.embeddingModel}. Reprocess the sources before querying with ${model}.`);
   }
@@ -384,7 +384,7 @@ export async function queryWorkspace(input: {
   let answer: string;
   let status: QueryRecord["status"] = "complete";
   try {
-    answer = await geminiGenerate(input.apiKey, cleanModelName(input.generationModel, "gemini-2.0-flash"), question, results);
+    answer = await geminiGenerate(input.apiKey, cleanModelName(input.generationModel, "gemini-3.6-flash"), question, results);
     if (results.length === 0 || results[0].score < 0.2) status = "insufficient";
   } catch (error) {
     const query: QueryRecord = {
@@ -408,7 +408,7 @@ export async function queryWorkspace(input: {
 
 export async function indexExtractedChunks(input: { workspaceId: string; apiKey: string; embeddingModel?: string }): Promise<IngestResult> {
   const workspace = getWorkspace(input.workspaceId);
-  const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "text-embedding-004");
+  const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
   const pending = workspace.chunks.filter(chunk => !chunk.embedding);
   const events: IngestResult["events"] = [];
   if (!pending.length) return { snapshot: toSnapshot(input.workspaceId, workspace), events };
