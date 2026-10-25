@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { jsPDF } from "jspdf";
 import { AlertCircle, Archive, ArrowDown, Check, ChevronDown, Clipboard, Database, Download, FileText, Gauge, KeyRound, Layers3, Loader2, Orbit, RefreshCw, Search, Settings2, SlidersHorizontal, Sparkles, Trash2, UploadCloud, X } from "lucide-react";
 import { AdaptiveNav } from "@/components/ui/AdaptiveNav";
@@ -95,9 +95,8 @@ const stages = [
 export default function Home() {
   const [workspaceId] = useState(defaultWorkspaceId);
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>();
-  const [apiKey, setApiKey] = useState("");
   const [embeddingModel, setEmbeddingModel] = useState("gemini-embedding-001");
-  const [generationModel, setGenerationModel] = useState("gemini-3.6-flash");
+  const [generationModel, setGenerationModel] = useState("gemini-3.5-flash");
   const [chunkSize, setChunkSize] = useState(780);
   const [overlap, setOverlap] = useState(120);
   const [topK, setTopK] = useState(5);
@@ -118,8 +117,8 @@ export default function Home() {
   const [traceMode, setTraceMode] = useState<"idle" | "ingest" | "query">("idle");
 
   const snapshotQuery = trpc.rag.snapshot.useQuery({ workspaceId }, { refetchOnWindowFocus: false });
-  const ingestMutation = trpc.rag.ingest.useMutation({ onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => setLocalError(error.message) });
-  const indexMutation = trpc.rag.indexExtracted.useMutation({ onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const ingestMutation = trpc.rag.ingest.useMutation({ onMutate: () => { setTraceMode("ingest"); setConfirmedEvents([]); setEventCursor(-1); setLastEvent("Upload accepted; awaiting server pipeline events"); }, onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const indexMutation = trpc.rag.indexExtracted.useMutation({ onMutate: () => { setTraceMode("ingest"); setConfirmedEvents([]); setEventCursor(-1); setLastEvent("Re-index accepted; awaiting server pipeline events"); }, onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setTraceMode("query"); setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const removeMutation = trpc.rag.removeDocument.useMutation({ onSuccess: result => { setSnapshot(result); setSelectedChunkId(undefined); } });
 
@@ -158,13 +157,12 @@ export default function Home() {
     setLocalError("");
     try {
       const encoded = await Promise.all(files.slice(0, 12).map(encodeFile));
-      ingestMutation.mutate({ workspaceId, files: encoded, apiKey: apiKey || undefined, embeddingModel, chunkSize, overlap });
+      ingestMutation.mutate({ workspaceId, files: encoded, embeddingModel, chunkSize, overlap });
     } catch (error) { setLocalError(error instanceof Error ? error.message : "Could not read the selected files."); }
-  }, [apiKey, chunkSize, embeddingModel, ingestMutation, overlap, workspaceId]);
+  }, [chunkSize, embeddingModel, ingestMutation, overlap, workspaceId]);
 
   const handleQuery = () => {
-    if (!apiKey.trim()) { setLocalError("Add a Gemini API key in Configure before querying. The key stays in this session and is not stored."); setSettingsOpen(true); return; }
-    queryMutation.mutate({ workspaceId, question, apiKey, embeddingModel, generationModel, topK });
+    queryMutation.mutate({ workspaceId, question, embeddingModel, generationModel, topK });
   };
 
   const copy = async (content: string) => {
@@ -177,12 +175,19 @@ export default function Home() {
     downloadText(`rag-quantum-${activeQuery.id}.txt`, `RAG QUANTUM LAB\n\nQUESTION\n${activeQuery.question}\n\nANSWER\n${activeQuery.answer || "No answer returned."}\n\nCITATIONS\n${citations}\n\nTIMINGS\nQuery embedding: ${formatMs(activeQuery.timings.queryEmbeddingMs)}\nRetrieval: ${formatMs(activeQuery.timings.retrievalMs)}\nGeneration: ${formatMs(activeQuery.timings.generationMs)}\nTotal: ${formatMs(activeQuery.timings.totalMs)}`);
   };
 
+  const handlePointerMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const x = (event.clientX - window.innerWidth / 2) * 0.018;
+    const y = (event.clientY - window.innerHeight / 2) * 0.012;
+    document.documentElement.style.setProperty("--parallax-x", `${x.toFixed(2)}px`);
+    document.documentElement.style.setProperty("--parallax-y", `${y.toFixed(2)}px`);
+  };
+
   const onDrop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); void ingestFiles(Array.from(event.dataTransfer.files)); };
   const stageDone = (key: typeof stages[number]["key"]) => key === "extract" || key === "chunk" ? Boolean(current?.chunks.length) : key === "embed" || key === "index" ? indexedCount > 0 : key === "retrieve" ? Boolean(activeQuery) : Boolean(activeQuery?.answer);
   const stageActive = (key: typeof stages[number]["key"]) => (isBusy && ((operation === "query" && (key === "retrieve" || key === "answer")) || (operation === "ingest" && (key === "embed" || key === "index")))) || (operation === "answer" && key === "answer");
 
   return (
-    <div className="lab-shell lab-shell--immersive">
+    <div className="lab-shell lab-shell--immersive" onPointerMove={handlePointerMove}>
       <div className="scene-viewport" aria-hidden="true">
         <Suspense fallback={<div className="scene-loading">INITIALIZING VECTOR FIELD</div>}><EmbeddingUniverse points={current?.points || []} queryProjection={activeQuery?.queryProjection} highlightedIds={highlightedIds} selectedId={selectedChunkId} onSelect={point => setSelectedChunkId(point.chunkId)} onHover={setHoveredPoint} resetToken={resetToken} fitToken={fitToken} reducedMotion={window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || false} /></Suspense>
         <div className="scene-vignette" />
@@ -202,7 +207,7 @@ export default function Home() {
             <div className="floating-drop-zone" onDragOver={event => event.preventDefault()} onDrop={onDrop}><UploadCloud size={18} strokeWidth={1.4} /><strong>Drop source</strong><span>or <label htmlFor="file-input">select files</label></span><input id="file-input" type="file" multiple hidden accept=".txt,.md,.markdown,.csv,.json,.html,.htm,.xml,.js,.jsx,.ts,.tsx,.py,.java,.go,.rs,.css,.scss,.yml,.yaml,.sql,.env,.pdf,.docx,.xlsx,.xls" onChange={event => { void ingestFiles(Array.from(event.target.files || [])); event.target.value = ""; }} /></div>
             <div className="source-dock__meta"><span>{current?.documents.length || 0} source{current?.documents.length === 1 ? "" : "s"}</span><span className="mono">{indexedCount} vectors</span></div>
             {current?.documents.length ? <div className="floating-source-list">{current.documents.slice(0, 4).map(document => <article className="floating-source-row" key={document.id}><span className={`source-state source-state--${document.status}`} /> <div><strong title={document.name}>{document.name}</strong><small>{stageText(document.stage)} · {document.chunkCount || "—"} chunks</small></div><button onClick={() => removeMutation.mutate({ workspaceId, documentId: document.id })} aria-label={`Remove ${document.name}`}><Trash2 size={12} /></button></article>)}</div> : <div className="source-empty"><Archive size={15} /><span>Sources become chunks, then vectors.</span></div>}
-            {extractedDocuments > 0 && <button className="floating-index-button" disabled={indexMutation.isPending} onClick={() => { if (!apiKey) { setSettingsOpen(true); setLocalError("Add a Gemini API key in Configure before indexing extracted chunks."); return; } indexMutation.mutate({ workspaceId, apiKey, embeddingModel }); }}>{indexMutation.isPending ? <Loader2 size={12} className="spin" /> : <Database size={12} />} {apiKey ? `index ${extractedDocuments} extracted` : "configure key to index"}</button>}
+            {extractedDocuments > 0 && <button className="floating-index-button" disabled={indexMutation.isPending} onClick={() => indexMutation.mutate({ workspaceId, embeddingModel })}>{indexMutation.isPending ? <Loader2 size={12} className="spin" /> : <Database size={12} />} index {extractedDocuments} extracted</button>}
           </> : <button className="source-collapsed-button" onClick={() => setSourceDockOpen(true)}><span className="source-count">{current?.documents.length || 0}</span><span>source register</span></button>}
         </section>
 
@@ -210,7 +215,7 @@ export default function Home() {
 
         <section className={`causal-trace causal-trace--${traceMode}`} aria-live="polite" aria-label="Visual RAG causal trace">
           <div className="causal-trace__head"><span className="eyebrow">CAUSAL TRACE</span><span className="causal-trace__mode">{isBusy ? "live request / awaiting confirmation" : traceMode === "query" ? "confirmed query result" : traceMode === "ingest" ? "confirmed backend events" : "idle"}</span></div>
-          {traceMode === "ingest" ? <div className="ingest-event-stack">{isBusy && <div className="trace-hold"><Loader2 size={13} className="spin" /><span>Server is processing. Exact progress is unavailable, so completion is not shown early.</span></div>}{visibleConfirmedEvents.map((event, index) => <div className="confirmed-event" key={`${event.at}-${index}`}><span className="confirmed-event__marker"><Check size={10} /></span><span><b>{event.stage}</b><small>{event.message}</small></span><time>{new Date(event.at).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })}</time></div>)}</div> : traceMode === "query" && question.trim() ? <div className="query-causal-trace"><div className="token-line"><span className="token-line__label">surface tokens</span>{surfaceTokens.slice(0, 28).map((token, index) => <span className={`query-token ${isBusy ? "is-processing" : "is-confirmed"}`} key={`${token}-${index}`}>{token}</span>)}{surfaceTokens.length > 28 && <span className="query-token">…</span>}</div><div className="query-route"><span className="query-route__node is-done">text</span><i /><span className={`query-route__node ${isBusy ? "is-running" : "is-done"}`}>embedding request</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : isBusy ? "is-running" : ""}`}>query vector</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : ""}`}>nearest chunks</span></div><div className="query-vector-readout">{isBusy ? <><Loader2 size={12} className="spin" /> Provider embedding pending — no query point is placed yet.</> : activeQuery ? <><Sparkles size={12} /> Query vector placed from the provider response; {activeQuery.results.length} actual result{activeQuery.results.length === 1 ? "" : "s"} converge in the field.</> : "Enter a question to start the query trace."}</div></div> : <div className="trace-idle">Upload a source or ask a question. The field only advances when the backend returns evidence.</div>}
+          {traceMode === "ingest" ? <div className="ingest-event-stack">{isBusy && <><div className="trace-hold"><Loader2 size={13} className="spin" /><span>Server is processing. Exact progress is unavailable, so completion is not shown early.</span></div><div className="live-stage-sequence">{["extracting", "chunking", "embedding", "indexing"].map(stage => <span className="live-stage" key={stage}><i />{stage}<b>pending confirmation</b></span>)}</div></>}{visibleConfirmedEvents.map((event, index) => <div className="confirmed-event" key={`${event.at}-${index}`}><span className="confirmed-event__marker"><Check size={10} /></span><span><b>{event.stage}</b><small>{event.message}</small></span><time>{new Date(event.at).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })}</time></div>)}</div> : traceMode === "query" && question.trim() ? <div className="query-causal-trace"><div className="token-line"><span className="token-line__label">surface tokens</span>{surfaceTokens.slice(0, 28).map((token, index) => <span className={`query-token ${isBusy ? "is-processing" : "is-confirmed"}`} key={`${token}-${index}`}>{token}</span>)}{surfaceTokens.length > 28 && <span className="query-token">…</span>}</div><div className="query-route"><span className="query-route__node is-done">text</span><i /><span className={`query-route__node ${isBusy ? "is-running" : "is-done"}`}>embedding request</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : isBusy ? "is-running" : ""}`}>query vector</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : ""}`}>nearest chunks</span></div><div className="query-vector-readout">{isBusy ? <><Loader2 size={12} className="spin" /> Provider embedding pending — no query point is placed yet.</> : activeQuery ? <><Sparkles size={12} /> Query vector placed from the provider response; {activeQuery.results.length} actual result{activeQuery.results.length === 1 ? "" : "s"} converge in the field.</> : "Enter a question to start the query trace."}</div></div> : <div className="trace-idle">Upload a source or ask a question. The field only advances when the backend returns evidence.</div>}
         </section>
 
         <section className="floating-method" aria-label="Visualization method"><span className="mono">METHOD</span><span>HIGH-DIMENSIONAL EMBEDDINGS</span><span className="method-separator">→</span><span>3D PCA-STYLE VIEW</span></section>
@@ -219,7 +224,7 @@ export default function Home() {
 
         {selectedChunk && <aside className="chunk-inspector" aria-label="Selected chunk inspection"><div className="chunk-inspector__head"><span className="eyebrow">CHUNK INSPECTOR</span><button onClick={() => setSelectedChunkId(undefined)} aria-label="Close chunk inspector"><X size={13} /></button></div><strong>{selectedChunk.sourceName}</strong><span className="mono">{selectedChunk.id} · {selectedChunk.location}</span><p>{selectedChunk.text}</p><div className="chunk-inspector__meta"><span><Layers3 size={12} /> {selectedChunk.embeddingDimension ? `${selectedChunk.embeddingDimension}D vector` : "not embedded"}</span><span><Gauge size={12} /> {selectedChunk.charCount} chars</span></div></aside>}
 
-        {settingsOpen && <aside className="floating-config" aria-label="Session configuration"><div className="floating-config__head"><span><KeyRound size={13} /> SESSION CONFIGURATION</span><button onClick={() => setSettingsOpen(false)} aria-label="Close configuration"><X size={14} /></button></div><label>Gemini API key<input type="password" value={apiKey} onChange={event => setApiKey(event.target.value)} placeholder="Held in session memory" autoComplete="off" /></label><div className="config-grid"><label>Embedding model<input value={embeddingModel} onChange={event => setEmbeddingModel(event.target.value)} /></label><label>Generation model<input value={generationModel} onChange={event => setGenerationModel(event.target.value)} /></label><label>Chunk size<input type="number" min={160} max={4000} value={chunkSize} onChange={event => setChunkSize(Number(event.target.value) || 780)} /></label><label>Overlap<input type="number" min={0} max={2000} value={overlap} onChange={event => setOverlap(Number(event.target.value) || 0)} /></label></div><p>The key is sent only to the server for the current operation. It is not persisted, exported, or rendered.</p></aside>}
+        {settingsOpen && <aside className="floating-config" aria-label="Session configuration"><div className="floating-config__head"><span><KeyRound size={13} /> MANAGED SESSION CONFIGURATION</span><button onClick={() => setSettingsOpen(false)} aria-label="Close configuration"><X size={14} /></button></div><div className="managed-key-status"><span className="status-dot status-dot--ready" /><span>Gemini project key active on the server</span></div><div className="config-grid"><label>Embedding model<input value={embeddingModel} onChange={event => setEmbeddingModel(event.target.value)} /></label><label>Generation model<input value={generationModel} onChange={event => setGenerationModel(event.target.value)} /></label><label>Chunk size<input type="number" min={160} max={4000} value={chunkSize} onChange={event => setChunkSize(Number(event.target.value) || 780)} /></label><label>Overlap<input type="number" min={0} max={2000} value={overlap} onChange={event => setOverlap(Number(event.target.value) || 0)} /></label></div><p>The project Gemini key is stored as a managed server secret. It is never sent from the browser, displayed, exported, or written to source files.</p></aside>}
 
         {localError && <div className="floating-error"><AlertCircle size={14} /><span>{localError}</span><button onClick={() => setLocalError("")} aria-label="Dismiss error"><X size={13} /></button></div>}
 

@@ -20,9 +20,9 @@ Useful checks are `pnpm check` for TypeScript and `pnpm test` for the existing V
 
 ## Current pipeline
 
-The server performs real format detection, extraction, deterministic chunking, and source metadata capture. With a Gemini API key configured in the session UI, it sends chunks to the configured embedding model, stores the returned vectors in the session workspace, computes a deterministic PCA-style 3D projection using power iteration for visualization, ranks query results with cosine similarity over the original vectors, and sends the actual top-k evidence to the configured generation model. The client never receives raw embeddings or persists the key. The provided development credential was live-tested successfully with `gemini-embedding-001` (3072 dimensions) and `gemini-3.6-flash`.
+The server performs real format detection, extraction, deterministic chunking, and source metadata capture. It automatically uses the managed `GEMINI_API_KEY` project secret for the configured embedding and generation models, stores the returned vectors in the session workspace, computes a deterministic PCA-style 3D projection using power iteration for visualization, ranks query results with cosine similarity over the original vectors, and sends the actual top-k evidence to the configured generation model. End users do not paste a key into the interface; the client never receives raw embeddings or the secret. The provided credential was live-tested successfully with `gemini-embedding-001` (3072 dimensions) and `gemini-3.5-flash`.
 
-If a document is extracted before a key is configured, the source register exposes an explicit re-index action after the key is entered. Provider errors are surfaced as actionable status messages without echoing provider response bodies.
+If a document is extracted before a key is available, the source register exposes an explicit re-index action. Provider errors are surfaced as actionable status messages without echoing provider response bodies.
 
 ## Supported formats in this build
 
@@ -30,7 +30,7 @@ TXT, Markdown, CSV, JSON, HTML, XML, common source/config files, PDF text layers
 
 ## Session and privacy behavior
 
-The current workspace is keyed by a browser session identifier and stored in server memory. It is intentionally not durable yet; a server restart clears documents, chunks, vectors, and query history. The Gemini key is held in React memory and sent only to the server for the current operation using a request header; it is not stored in browser storage, URLs, logs, or exports. The current public workspace procedures are suitable for a single-user capstone preview, not a multi-tenant deployment; authentication and server-enforced workspace ownership remain hardening work.
+The current workspace is keyed by a browser session identifier and stored in server memory. It is intentionally not durable yet; a server restart clears documents, chunks, vectors, and query history. The Gemini key is stored as a managed server secret and is never sent from the browser, shown in the UI, stored in browser storage, placed in URLs, logged, or exported. The current public workspace procedures are suitable for a single-user capstone preview, not a multi-tenant deployment; authentication and server-enforced workspace ownership remain hardening work.
 
 ## Project files
 

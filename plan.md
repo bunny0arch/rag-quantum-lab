@@ -4,7 +4,7 @@
 
 RAG Quantum Lab will remain on the initialized React 19 + Vite + Express + tRPC + Drizzle stack. The working slice establishes the core capstone experience end-to-end without fabricating AI activity: a direct-to-workspace interface, session-scoped document ingestion, deterministic extraction/chunking, Gemini-backed embedding and generation boundaries, retrieval state, evidence inspection, export controls, and an interactive Three.js embedding-space visualization driven by returned chunk data. The primary composition is a full-viewport spatial instrument with lightweight floating controls rather than a dashboard grid.
 
-The product will use a session workspace identifier generated in the browser. Uploaded files and user credentials stay in the active session path; API keys are held in React memory and passed only to server procedures for the current request. The initial server store is an explicit in-memory workspace service so the first slice is usable without inventing a persistence model; the selected database remains available for a later durable document/index migration. The UI will clearly label the current session and any unavailable capability rather than display fake results.
+The product will use a session workspace identifier generated in the browser. Uploaded files stay in the active session path; the managed `GEMINI_API_KEY` is resolved only on the server and never entered or exposed in the browser. The initial server store is an explicit in-memory workspace service so the first slice is usable without inventing a persistence model; the selected database remains available for a later durable document/index migration. The UI will clearly label the current session and any unavailable capability rather than display fake results.
 
 ## Architecture
 
@@ -71,5 +71,5 @@ Use existing dependencies first. Add only the packages needed for the real produ
 
 - The initial session workspace is in memory and is lost when the server restarts; a database-backed document/index migration remains a later hardening step.
 - OCR for scanned PDFs and rich Office parsing will be surfaced as unsupported or pending until a parser is added and tested; the UI will not claim universal file support.
-- The provided development credential was live-tested successfully with `gemini-embedding-001` (3072 dimensions) and `gemini-3.6-flash`; other provider models remain user-configurable and may return provider-specific availability errors.
+- The provided development credential was live-tested successfully with `gemini-embedding-001` (3072 dimensions) and `gemini-3.5-flash`; other provider models remain user-configurable and may return provider-specific availability errors.
 - Citation source-linking is implemented from retrieved chunk metadata; independent claim-level citation verification is not claimed.

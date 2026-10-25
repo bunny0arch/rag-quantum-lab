@@ -253,6 +253,12 @@ function event(documentId: string, stage: PipelineStage, message: string) {
   return { documentId, stage, message, at: now() };
 }
 
+function configuredGeminiKey(override?: string) {
+  const key = override?.trim() || process.env.GEMINI_API_KEY?.trim();
+  if (!key) throw new Error("No Gemini API key is configured for this project.");
+  return key;
+}
+
 export async function snapshotWorkspace(workspaceId: string) {
   return toSnapshot(workspaceId, getWorkspace(workspaceId));
 }
@@ -260,7 +266,7 @@ export async function snapshotWorkspace(workspaceId: string) {
 export async function ingestFiles(input: {
   workspaceId: string;
   files: IngestFileInput[];
-  apiKey?: string;
+  apiKey?: string | null;
   embeddingModel?: string;
   chunkSize?: number;
   overlap?: number;
@@ -270,7 +276,8 @@ export async function ingestFiles(input: {
   const workspace = getWorkspace(input.workspaceId);
   const events: IngestResult["events"] = [];
   const embeddingModel = cleanModelName(input.embeddingModel, "gemini-embedding-001");
-  if (input.apiKey) workspace.embeddingModel = embeddingModel;
+  const apiKey = input.apiKey === null ? undefined : input.apiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+  if (apiKey) workspace.embeddingModel = embeddingModel;
 
   for (const file of input.files) {
     const documentId = nanoid(10);
@@ -301,11 +308,11 @@ export async function ingestFiles(input: {
       const chunks = chunkText(extracted.text, documentId, file.name, extracted.location, input.chunkSize, input.overlap);
       if (!chunks.length) throw new Error("The extracted document produced no non-empty chunks.");
       document.chunkCount = chunks.length;
-      if (input.apiKey) {
+      if (apiKey) {
         document.stage = "embedding";
         events.push(event(documentId, "embedding", `Embedding ${chunks.length} chunks with ${embeddingModel}`));
         const started = Date.now();
-        for (const chunk of chunks) chunk.embedding = await geminiEmbed(input.apiKey, embeddingModel, chunk.text);
+        for (const chunk of chunks) chunk.embedding = await geminiEmbed(apiKey, embeddingModel, chunk.text);
         const existingDimension = workspace.chunks.find(chunk => chunk.embedding)?.embedding?.length;
         const nextDimension = chunks[0]?.embedding?.length;
         if (existingDimension && nextDimension && existingDimension !== nextDimension) {
@@ -322,7 +329,7 @@ export async function ingestFiles(input: {
         events.push(event(documentId, "ready", "Chunks ready; add a Gemini key to generate embeddings and index vectors"));
       }
       document.stage = "ready";
-      document.status = input.apiKey ? "ready" : "extracted";
+      document.status = apiKey ? "ready" : "extracted";
       events.push(event(documentId, "ready", `${document.chunkCount} chunks available for inspection`));
     } catch (error) {
       document.status = "error";
@@ -344,12 +351,13 @@ export async function ingestFiles(input: {
 export async function queryWorkspace(input: {
   workspaceId: string;
   question: string;
-  apiKey: string;
+  apiKey?: string;
   generationModel?: string;
   embeddingModel?: string;
   topK?: number;
 }): Promise<QueryResult> {
   const workspace = getWorkspace(input.workspaceId);
+  const apiKey = configuredGeminiKey(input.apiKey);
   const started = Date.now();
   const question = input.question.trim();
   if (!question) throw new Error("Enter a question before retrieving evidence.");
@@ -361,7 +369,7 @@ export async function queryWorkspace(input: {
   if (workspace.embeddingModel && model !== workspace.embeddingModel) {
     throw new Error(`Embedding model mismatch: this index uses ${workspace.embeddingModel}. Reprocess the sources before querying with ${model}.`);
   }
-  const queryEmbedding = await geminiEmbed(input.apiKey, model, question);
+  const queryEmbedding = await geminiEmbed(apiKey, model, question);
   const queryEmbeddingMs = Date.now() - embeddingStarted;
   const indexDimension = indexed[0]?.embedding?.length;
   if (indexDimension && queryEmbedding.length !== indexDimension) {
@@ -384,7 +392,7 @@ export async function queryWorkspace(input: {
   let answer: string;
   let status: QueryRecord["status"] = "complete";
   try {
-    answer = await geminiGenerate(input.apiKey, cleanModelName(input.generationModel, "gemini-3.6-flash"), question, results);
+    answer = await geminiGenerate(apiKey, cleanModelName(input.generationModel, "gemini-3.5-flash"), question, results);
     if (results.length === 0 || results[0].score < 0.2) status = "insufficient";
   } catch (error) {
     const query: QueryRecord = {
@@ -406,15 +414,16 @@ export async function queryWorkspace(input: {
   return { snapshot: toSnapshot(input.workspaceId, workspace), query };
 }
 
-export async function indexExtractedChunks(input: { workspaceId: string; apiKey: string; embeddingModel?: string }): Promise<IngestResult> {
+export async function indexExtractedChunks(input: { workspaceId: string; apiKey?: string; embeddingModel?: string }): Promise<IngestResult> {
   const workspace = getWorkspace(input.workspaceId);
+  const apiKey = configuredGeminiKey(input.apiKey);
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
   const pending = workspace.chunks.filter(chunk => !chunk.embedding);
   const events: IngestResult["events"] = [];
   if (!pending.length) return { snapshot: toSnapshot(input.workspaceId, workspace), events };
   const embedded: Array<{ chunk: InternalChunk; vector: number[] }> = [];
   try {
-    for (const chunk of pending) embedded.push({ chunk, vector: await geminiEmbed(input.apiKey, model, chunk.text) });
+    for (const chunk of pending) embedded.push({ chunk, vector: await geminiEmbed(apiKey, model, chunk.text) });
     const existingDimension = workspace.chunks.find(chunk => chunk.embedding)?.embedding?.length;
     const nextDimension = embedded[0]?.vector.length;
     if (existingDimension && nextDimension && existingDimension !== nextDimension) {

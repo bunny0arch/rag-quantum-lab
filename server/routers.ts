@@ -31,12 +31,12 @@ export const appRouter = router({
     query: publicProcedure.input(z.object({
       workspaceId,
       question: z.string().trim().min(2).max(1200),
-      apiKey: z.string().trim().min(10).max(300),
+      apiKey,
       embeddingModel: z.string().trim().max(120).optional(),
       generationModel: z.string().trim().max(120).optional(),
       topK: z.number().int().min(1).max(10).optional(),
     })).mutation(({ input }) => queryWorkspace(input)),
-    indexExtracted: publicProcedure.input(z.object({ workspaceId, apiKey: z.string().trim().min(10).max(300), embeddingModel: z.string().trim().max(120).optional() })).mutation(({ input }) => indexExtractedChunks(input)),
+    indexExtracted: publicProcedure.input(z.object({ workspaceId, apiKey, embeddingModel: z.string().trim().max(120).optional() })).mutation(({ input }) => indexExtractedChunks(input)),
     removeDocument: publicProcedure.input(z.object({ workspaceId, documentId: z.string().min(1).max(80) })).mutation(({ input }) => removeDocument(input.workspaceId, input.documentId)),
   }),
 });

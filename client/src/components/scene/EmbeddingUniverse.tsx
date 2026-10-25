@@ -73,6 +73,22 @@ function Grid() {
   );
 }
 
+function WaveBackdrop({ reducedMotion }: { reducedMotion: boolean }) {
+  const materialRef = useRef<THREE.ShaderMaterial>(null);
+  const uniforms = useMemo(() => ({ uTime: { value: 0 }, uPointer: { value: new THREE.Vector2() } }), []);
+  useFrame(({ clock, pointer }) => {
+    if (!materialRef.current) return;
+    if (!reducedMotion) materialRef.current.uniforms.uTime.value = clock.elapsedTime;
+    materialRef.current.uniforms.uPointer.value.lerp(new THREE.Vector2(pointer.x, pointer.y), 0.035);
+  });
+  return (
+    <mesh position={[0, 0, -6]}>
+      <planeGeometry args={[18, 12]} />
+      <shaderMaterial ref={materialRef} uniforms={uniforms} transparent depthWrite={false} side={THREE.DoubleSide} vertexShader={`varying vec2 vUv; void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`} fragmentShader={`uniform float uTime; uniform vec2 uPointer; varying vec2 vUv; void main(){vec2 uv=vUv*2.0-1.0;float t=uTime*0.12;float w=sin(uv.x*3.4+t+uPointer.x*0.4)*0.11+sin(uv.y*4.2-t*0.7+uPointer.y*0.3)*0.08+sin((uv.x+uv.y)*6.0+t*0.45)*0.035;float horizon=smoothstep(0.9,-0.55,uv.y);vec3 graphite=vec3(0.008,0.012,0.012);vec3 sage=vec3(0.075,0.13,0.12);vec3 amber=vec3(0.16,0.105,0.045);vec3 color=graphite+sage*(0.34+0.22*w)*horizon+amber*max(0.0,w)*0.08;float vignette=1.0-smoothstep(0.25,1.25,length(uv*vec2(0.85,0.72)));gl_FragColor=vec4(color*vignette,0.92);}`} />
+    </mesh>
+  );
+}
+
 function SceneContents({ props }: { props: UniverseProps }) {
   const controlsRef = useRef<any>(null);
   const parallaxRef = useRef<THREE.Group>(null);
@@ -114,6 +130,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
       <pointLight position={[2, 4, 4]} intensity={3} distance={12} color="#d6a85e" />
       <pointLight position={[-4, 1, -2]} intensity={1.4} distance={10} color="#93a6a1" />
       <group ref={parallaxRef}>
+      <WaveBackdrop reducedMotion={props.reducedMotion} />
       <AmbientField reducedMotion={props.reducedMotion} />
       <Grid />
       <group>

@@ -5,6 +5,8 @@
 - [x] Make the 3D vector space span the viewport edge to edge behind the interface, without a bordered canvas, boxed visualization, dashboard card, or isolated scene section.
 - [x] Use floating, frameless source controls and a compact floating drag-and-drop zone integrated into the environment; allow the source control to collapse after upload while preserving file status.
 - [x] Use a floating query composer anchored near the bottom with keyboard submission, clear focus states, and an obvious submit action.
+- [x] Add a calm custom WebGL wave shader behind the vector field, with reduced-motion behavior and pointer-reactive flow.
+- [x] Use metallic instrument-style buttons with hover lift, pressed states, highlight bloom, and subtle whole-interface mouse parallax.
 - [x] Keep controls spatially anchored and lightweight, use progressive disclosure, preserve the central environment, and reveal evidence/answer contextually after a query rather than permanently occupying a large opaque panel.
 - [x] Provide accessible labels, keyboard navigation, sufficient contrast, responsive collapse for smaller screens, reduced-motion behavior, and a non-3D way to inspect chunks and retrieval results.
 - [ ] Add a true streamed event channel such as SSE or WebSockets for intermediate backend progress; the current build uses confirmed mutation state plus structured events returned by each completed operation.
@@ -38,7 +40,7 @@
 - [ ] Add reproducible experiment controls for chunk size, overlap, top-k, and alternative retrieval methods only where implemented; the current build exposes chunking/top-k configuration but not a full experiment runner.
 
 ## Security, data management, and resilience
-- [x] Keep user-provided Gemini credentials in session memory where feasible; never expose them in source control, client bundles, URLs, logs, or exports; explain provider data flow and persistence behavior.
+- [x] Use the supplied Gemini credential as the managed `GEMINI_API_KEY` server secret for all RAG operations; never expose it in the interface, source control, client bundles, URLs, logs, or exports; explain provider data flow and persistence behavior.
 - [x] Provide document removal controls that remove associated chunks, vectors, and workspace references.
 - [x] Handle invalid credentials, unavailable models, quota/rate limits, network interruptions, generation failures, export failures, WebGL unavailability, and empty/oversized/corrupt/duplicate files with concise actionable explanations.
 - [ ] Add authenticated server-enforced workspace ownership and durable database-backed document/index storage; the current capstone preview is session-scoped in-memory.
