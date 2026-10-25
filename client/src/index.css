@@ -245,3 +245,44 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, label:has(inp
 .live-stage-sequence { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 11px; }.live-stage { position: relative; display: grid; gap: 4px; min-width: 0; color: var(--amber); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; text-transform: uppercase; }.live-stage i { display: block; height: 2px; overflow: hidden; background: rgba(214,168,94,.18); }.live-stage i::after { display: block; width: 35%; height: 100%; background: var(--amber); content: ""; animation: stage-sweep 1.35s ease-in-out infinite; }.live-stage:nth-child(2) i::after { animation-delay: .18s; }.live-stage:nth-child(3) i::after { animation-delay: .36s; }.live-stage:nth-child(4) i::after { animation-delay: .54s; }.live-stage b { overflow: hidden; color: var(--faint); font-size: 7px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
 @keyframes stage-sweep { from { transform: translateX(-120%); } to { transform: translateX(350%); } }
 @media (prefers-reduced-motion: reduce) { .floating-topbar, .source-dock, .universe-readout, .floating-method, .floating-query, .evidence-float, .floating-config, .chunk-inspector, .causal-trace { translate: none; transition: none; }.live-stage i::after { animation: none; width: 100%; opacity: .42; } }
+
+/* Layout safety overrides for floating instrument controls */
+.floating-query__context,
+.floating-query__footer { min-width: 0; gap: 8px 12px; flex-wrap: wrap; }
+.floating-query__context > *,
+.floating-query__footer > * { min-width: 0; }
+.floating-query__context > .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.floating-query__footer label { margin-left: auto; }
+.show-evidence { margin-left: 0; white-space: nowrap; }
+.pipeline-float__head { min-width: 0; flex-wrap: wrap; }
+.pipeline-float__head > .eyebrow { flex: 0 0 auto; }
+.pipeline-operation { min-width: 0; flex: 1 1 180px; }
+.pipeline-track { min-width: 0; overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
+.pipeline-node { flex: 0 0 auto; }
+.answer-float__status { min-width: 0; flex-wrap: wrap; }
+.answer-float__status .mono { margin-left: auto; }
+.universe-readout { width: min(390px, calc(100vw - 56px)); min-width: 0; padding: 0 8px; }
+.universe-readout > span:last-of-type { overflow-wrap: anywhere; }
+.universe-readout__actions { position: relative; z-index: 1; }
+.floating-method { max-width: min(420px, calc(100vw - 56px)); flex-wrap: wrap; justify-content: flex-end; text-align: right; line-height: 1.35; }
+.floating-error { max-width: min(600px, calc(100vw - 40px)); }
+.floating-source-row > div { min-width: 0; flex: 1 1 auto; }
+.floating-source-row strong,
+.floating-source-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .universe-readout { width: min(360px, calc(100vw - 32px)); }
+  .floating-method { max-width: min(340px, calc(100vw - 32px)); }
+  .floating-query__footer label { margin-left: auto; }
+}
+
+@media (max-width: 620px) {
+  .universe-readout { width: calc(100vw - 24px); padding: 0 4px; }
+  .floating-method { max-width: 132px; }
+  .floating-query__footer { justify-content: flex-start; }
+  .floating-query__footer label { margin-left: 0; }
+  .floating-query__footer .show-evidence { margin-left: auto; }
+  .pipeline-float__head { align-items: flex-start; }
+  .pipeline-operation { flex-basis: 100%; }
+  .answer-float__status .mono { margin-left: 0; }
+}
