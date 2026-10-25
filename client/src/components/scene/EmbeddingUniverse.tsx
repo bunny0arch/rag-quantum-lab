@@ -1,4 +1,4 @@
-import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
+import { Line, OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
@@ -104,6 +104,9 @@ function SceneContents({ props }: { props: UniverseProps }) {
     }
   }, [camera, props.fitToken, props.points]);
 
+  const queryPosition = props.queryProjection ? [props.queryProjection[0] * 2.8, props.queryProjection[1] * 2.2, props.queryProjection[2] * 2.8] as [number, number, number] : undefined;
+  const retrievedPoints = props.points.filter(point => props.highlightedIds.has(point.chunkId));
+
   return (
     <>
       <PerspectiveCamera makeDefault position={[4.8, 2.4, 6.8]} fov={42} />
@@ -144,6 +147,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
           </mesh>
         </>
       )}
+      {queryPosition && retrievedPoints.map(point => <Line key={`link-${point.chunkId}`} points={[queryPosition, [point.x * 2.8, point.y * 2.2, point.z * 2.8]]} color="#d6a85e" lineWidth={0.55} transparent opacity={0.28} />)}
       </group>
       <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} minDistance={2.6} maxDistance={14} makeDefault />
     </>

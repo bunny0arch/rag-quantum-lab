@@ -1,9 +1,9 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
 import { jsPDF } from "jspdf";
-import { AlertCircle, Archive, ArrowDown, Check, ChevronDown, Clipboard, Database, Download, FileText, Gauge, KeyRound, Layers3, Loader2, Orbit, RefreshCw, Search, Settings2, SlidersHorizontal, Trash2, UploadCloud, X } from "lucide-react";
+import { AlertCircle, Archive, ArrowDown, Check, ChevronDown, Clipboard, Database, Download, FileText, Gauge, KeyRound, Layers3, Loader2, Orbit, RefreshCw, Search, Settings2, SlidersHorizontal, Sparkles, Trash2, UploadCloud, X } from "lucide-react";
 import { AdaptiveNav } from "@/components/ui/AdaptiveNav";
 import { trpc } from "@/lib/trpc";
-import type { ChunkRecord, DocumentRecord, ProjectedPoint, QueryRecord, WorkspaceSnapshot } from "@shared/types";
+import type { DocumentRecord, IngestResult, ProjectedPoint, QueryRecord, WorkspaceSnapshot } from "@shared/types";
 
 const EmbeddingUniverse = lazy(() => import("@/components/scene/EmbeddingUniverse"));
 
@@ -22,6 +22,7 @@ const defaultWorkspaceId = () => {
 const formatMs = (value?: number) => (typeof value === "number" ? `${value} ms` : "—");
 const formatBytes = (value: number) => value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
 const stageText = (stage: DocumentRecord["stage"]) => ({ queued: "queued", validating: "validating", extracting: "extracting", chunking: "chunking", embedding: "embedding", indexing: "indexing", ready: "ready", error: "error" })[stage];
+const lexicalTokens = (value: string) => value.match(/[\p{L}\p{N}]+|[^\s\p{L}\p{N}]/gu) || [];
 
 function encodeFile(file: File) {
   return new Promise<{ name: string; mimeType: string; size: number; contentBase64: string }>((resolve, reject) => {
@@ -112,14 +113,23 @@ export default function Home() {
   const [activeNav, setActiveNav] = useState("universe");
   const [localError, setLocalError] = useState("");
   const [lastEvent, setLastEvent] = useState("");
+  const [confirmedEvents, setConfirmedEvents] = useState<IngestResult["events"]>([]);
+  const [eventCursor, setEventCursor] = useState(-1);
+  const [traceMode, setTraceMode] = useState<"idle" | "ingest" | "query">("idle");
 
   const snapshotQuery = trpc.rag.snapshot.useQuery({ workspaceId }, { refetchOnWindowFocus: false });
-  const ingestMutation = trpc.rag.ingest.useMutation({ onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => setLocalError(error.message) });
-  const indexMutation = trpc.rag.indexExtracted.useMutation({ onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
-  const queryMutation = trpc.rag.query.useMutation({ onSuccess: result => { setSnapshot(result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const ingestMutation = trpc.rag.ingest.useMutation({ onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const indexMutation = trpc.rag.indexExtracted.useMutation({ onSuccess: result => { setSnapshot(result.snapshot); setConfirmedEvents(result.events); setEventCursor(-1); setTraceMode("ingest"); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setTraceMode("query"); setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const removeMutation = trpc.rag.removeDocument.useMutation({ onSuccess: result => { setSnapshot(result); setSelectedChunkId(undefined); } });
 
   useEffect(() => { if (snapshotQuery.data && !snapshot) setSnapshot(snapshotQuery.data); }, [snapshot, snapshotQuery.data]);
+
+  useEffect(() => {
+    if (traceMode !== "ingest" || !confirmedEvents.length || eventCursor >= confirmedEvents.length - 1) return;
+    const timer = window.setTimeout(() => setEventCursor(cursor => Math.min(cursor + 1, confirmedEvents.length - 1)), eventCursor < 0 ? 140 : 420);
+    return () => window.clearTimeout(timer);
+  }, [confirmedEvents, eventCursor, traceMode]);
 
   useEffect(() => {
     const observer = new IntersectionObserver(entries => {
@@ -131,7 +141,7 @@ export default function Home() {
   }, []);
 
   const current = snapshot || snapshotQuery.data;
-  const activeQuery = current?.queries.find(queryRecord => queryRecord.id === activeQueryId) || current?.queries[0];
+  const activeQuery = queryMutation.isPending ? undefined : current?.queries.find(queryRecord => queryRecord.id === activeQueryId) || current?.queries[0];
   const selectedChunk = current?.chunks.find(chunk => chunk.id === selectedChunkId);
   const highlightedIds = useMemo(() => new Set(activeQuery?.results.map(result => result.id) || []), [activeQuery]);
   const indexedCount = current?.points.length || 0;
@@ -140,6 +150,8 @@ export default function Home() {
   const isBusy = ingestMutation.isPending || indexMutation.isPending || queryMutation.isPending;
   const operation = queryMutation.isPending ? "query" : (ingestMutation.isPending || indexMutation.isPending) ? "ingest" : activeQuery ? "answer" : indexedCount ? "ready" : current?.chunks.length ? "extracted" : "idle";
   const currentTone = localError ? "error" : isBusy ? "warn" : indexedCount ? "ready" : current?.chunks.length ? "warn" : "neutral";
+  const surfaceTokens = lexicalTokens(question);
+  const visibleConfirmedEvents = confirmedEvents.slice(0, Math.max(0, eventCursor + 1));
 
   const ingestFiles = useCallback(async (files: File[]) => {
     if (!files.length) return;
@@ -195,6 +207,11 @@ export default function Home() {
         </section>
 
         <section id="universe" className="universe-readout" aria-label="Embedding universe readout"><span className="eyebrow">02 / VECTOR SPACE</span><strong>{indexedCount ? `${indexedCount} indexed point${indexedCount === 1 ? "" : "s"}` : "Awaiting indexed vectors"}</strong><span>PCA-style projection · cosine ranking stays in original space</span><div className="universe-readout__actions"><button onClick={() => setResetToken(value => value + 1)} title="Reset camera"><RefreshCw size={13} /></button><button onClick={() => setFitToken(value => value + 1)} disabled={!indexedCount} title="Fit all points"><Orbit size={13} /></button></div></section>
+
+        <section className={`causal-trace causal-trace--${traceMode}`} aria-live="polite" aria-label="Visual RAG causal trace">
+          <div className="causal-trace__head"><span className="eyebrow">CAUSAL TRACE</span><span className="causal-trace__mode">{isBusy ? "live request / awaiting confirmation" : traceMode === "query" ? "confirmed query result" : traceMode === "ingest" ? "confirmed backend events" : "idle"}</span></div>
+          {traceMode === "ingest" ? <div className="ingest-event-stack">{isBusy && <div className="trace-hold"><Loader2 size={13} className="spin" /><span>Server is processing. Exact progress is unavailable, so completion is not shown early.</span></div>}{visibleConfirmedEvents.map((event, index) => <div className="confirmed-event" key={`${event.at}-${index}`}><span className="confirmed-event__marker"><Check size={10} /></span><span><b>{event.stage}</b><small>{event.message}</small></span><time>{new Date(event.at).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })}</time></div>)}</div> : traceMode === "query" && question.trim() ? <div className="query-causal-trace"><div className="token-line"><span className="token-line__label">surface tokens</span>{surfaceTokens.slice(0, 28).map((token, index) => <span className={`query-token ${isBusy ? "is-processing" : "is-confirmed"}`} key={`${token}-${index}`}>{token}</span>)}{surfaceTokens.length > 28 && <span className="query-token">…</span>}</div><div className="query-route"><span className="query-route__node is-done">text</span><i /><span className={`query-route__node ${isBusy ? "is-running" : "is-done"}`}>embedding request</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : isBusy ? "is-running" : ""}`}>query vector</span><i /><span className={`query-route__node ${activeQuery ? "is-done" : ""}`}>nearest chunks</span></div><div className="query-vector-readout">{isBusy ? <><Loader2 size={12} className="spin" /> Provider embedding pending — no query point is placed yet.</> : activeQuery ? <><Sparkles size={12} /> Query vector placed from the provider response; {activeQuery.results.length} actual result{activeQuery.results.length === 1 ? "" : "s"} converge in the field.</> : "Enter a question to start the query trace."}</div></div> : <div className="trace-idle">Upload a source or ask a question. The field only advances when the backend returns evidence.</div>}
+        </section>
 
         <section className="floating-method" aria-label="Visualization method"><span className="mono">METHOD</span><span>HIGH-DIMENSIONAL EMBEDDINGS</span><span className="method-separator">→</span><span>3D PCA-STYLE VIEW</span></section>
 
