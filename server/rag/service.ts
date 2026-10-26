@@ -284,7 +284,7 @@ function event(workspaceId: string, operationId: string, documentId: string, sta
 
 function configuredGeminiKey(override?: string) {
   const key = override?.trim() || process.env.GEMINI_API_KEY?.trim();
-  if (!key) throw new Error("No Gemini API key is configured for this project.");
+  if (!key) throw new Error("Gemini is not configured on the server. Set GEMINI_API_KEY in the deployment environment and redeploy; do not paste a key into the browser.");
   return key;
 }
 
@@ -361,7 +361,7 @@ export async function ingestFiles(input: {
         workspace.chunks.push(...chunks);
         document.stage = "ready";
         document.status = "extracted";
-        events.push(event(input.workspaceId, operationId, documentId, "ready", "Chunks ready; add a Gemini key to generate embeddings and index vectors"));
+        events.push(event(input.workspaceId, operationId, documentId, "ready", "Chunks extracted, but the server Gemini key is unavailable; configure GEMINI_API_KEY and redeploy to create vectors"));
       }
       document.stage = "ready";
       document.status = apiKey ? "ready" : "extracted";
@@ -397,7 +397,7 @@ export async function queryWorkspace(input: {
   const question = input.question.trim();
   if (!question) throw new Error("Enter a question before retrieving evidence.");
   const indexed = workspace.chunks.filter(chunk => chunk.embedding);
-  if (!indexed.length) throw new Error("No indexed vectors are available. Add a Gemini key and process a document first.");
+  if (!indexed.length) throw new Error("No indexed vectors are available. Process a document first; if it remains extracted, configure GEMINI_API_KEY on the server and redeploy.");
 
   const embeddingStarted = Date.now();
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
