@@ -1,34 +1,41 @@
 # RAG Quantum Lab — Requirements Audit
 
-Audit date: 2026-10-25. This review covers `/home/ubuntu/upload/pasted_content.txt`, `/home/ubuntu/upload/pasted_content_2.txt`, and the final source at commit `e118c11`.
+Audit date: 2026-10-26. Scope: `/home/ubuntu/upload/pasted_content.txt`, `/home/ubuntu/upload/pasted_content_2.txt`, and deployed GitHub/Vercel revision `2da1ad2`.
 
-## Status summary
+## Verdict
+
+The deployment is a functional RAG laboratory, but **the pasted specifications are not 100% fully met**. The core upload → extraction → chunking → embedding → indexing → query embedding → high-dimensional retrieval → grounded generation → citation/export path is working and was tested in production. Several explicitly required capabilities remain partial or missing and are listed below rather than being represented as complete.
+
+## Requirement status
 
 | Area | Status | Evidence / limitation |
 |---|---|---|
-| Full-viewport spatial instrument | **MET** | `Home.tsx` and `index.css` provide the edge-to-edge vector environment, floating source/query/pipeline/evidence controls, responsive breakpoints, and reduced-motion treatment. |
-| Fixed infinite background field | **MET** | `EmbeddingUniverse.tsx` attaches the wave shader to the active camera, uses a large frustum-safe plane, renders it behind the scene, and keeps it independent of orbit rotation. The grid is enlarged to 64 units and the orbit distance is bounded so zoom-out cannot make the map disappear. |
-| Visibility / contrast | **MET** | Scene grid, point markers, query marker, retrieval lines, ambient field, metadata, separators, and core text were raised in contrast. Points use bright basic materials rather than low-light-dependent standard materials. |
-| Real ingestion pipeline | **MET for implemented formats** | Validation, format detection, extraction, normalization, metadata, deterministic chunking, embedding, indexing, PCA-style projection, retrieval, grounded generation, citations, timings, deletion, and explicit error states are implemented in `server/rag/service.ts`. |
-| Scanned PDF OCR | **MISSING** | PDFs use `pdf-parse` text-layer extraction only. Scanned/image-only pages are not OCRed. |
-| PPT/PPTX ingestion | **MISSING** | PPTX is explicitly unsupported in the current build. |
-| Deterministic chunking | **MET** | Configurable bounded character chunk size and overlap; stable chunk IDs, source offsets, and chunk inspection are present. |
-| Real embeddings and retrieval | **MET** | Gemini embeddings are requested server-side, vectors remain separate from projected coordinates, cosine similarity ranks original vectors, model/dimension mismatches are rejected. No reranker or hybrid retrieval is claimed. |
-| Grounded generation and citations | **PARTIAL** | Retrieved passages and metadata are supplied to Gemini and source-linked citations are returned. Claim-level citation verification and independent citation correctness scoring are not implemented. |
-| 3D interaction | **MET** | Orbit, pan, zoom, reset, fit-to-view, hover, click selection, retrieval highlighting, query highlighting, legends, source/chunk inspection, and a non-3D evidence/chunk alternative are present. |
-| Large-index performance | **PARTIAL** | DPR is capped and visibility/reduced-motion safeguards exist, but points are still individual meshes with no clustering, instancing, or large-index subset strategy. |
-| WebGL fallback | **MET** | A clear fallback tells the user to use the evidence table when WebGL is unavailable. |
-| Event-driven visual states | **PARTIAL** | Ingestion returns structured backend stage events and the UI replays only confirmed events after the mutation returns; query visuals reflect pending/result state. There is no streamed intermediate event channel. |
-| SSE/WebSockets | **MISSING** | No SSE endpoint, `EventSource`, WebSocket server, or socket client exists. |
-| Upload/query visual sequence | **PARTIAL** | The causal trace, token/vector language, pending states, and retrieval connectors are tied to confirmed operations and real results, but query embedding/retrieval is not streamed live from the provider. |
-| Keyboard/accessibility/reduced motion | **PARTIAL** | Query submission, focus-visible styles, labels, reduced-motion behavior, coarse-pointer handling, and evidence-table alternative exist. The canvas itself is not a keyboard-semantic point list; the evidence/chunk UI is the accessible inspection alternative. |
-| Exports and deletion | **MET** | Copy actions, TXT export, selectable-text PDF export, and document/chunk/query cleanup are implemented. |
-| Evaluation experiments | **MISSING** | There is no reproducible experiment runner, recall/precision dataset, answer-quality benchmark, or ablation result persistence yet. |
-| Credential handling | **MET** | The supplied Gemini credential is stored as the managed server-side `GEMINI_API_KEY` secret and is not entered in the browser, placed in source, or returned in exports. |
-| Persistence and ownership | **PARTIAL** | The deployed preview uses a process-memory, session-scoped workspace map. Restart loss and lack of authenticated RAG workspace ownership are disclosed; durable RAG tables and per-user authorization are not yet implemented. |
-| Error handling | **MET** | Invalid/empty/unsupported/duplicate/oversized files, provider errors, model/quota/network errors, incompatible dimensions, missing index, export errors, and WebGL unavailability have explicit paths. |
-| Vercel deployment | **MET for serving** | GitHub repository `bunny0arch/rag-quantum-lab` is linked to Vercel. Production alias serves the client with HTTP 200, `/api/health` returns `{"status":"ok"}`, `/api/trpc/rag.snapshot` returns a valid snapshot, and `/manus-routes.json` returns the declared route set. |
+| Full-viewport spatial instrument | MET | Edge-to-edge vector environment, floating source/query/pipeline/evidence controls, responsive layout, reduced-motion handling. |
+| Fixed infinite background field | MET | Camera-attached shader field remains stable during orbit; grid, framing, contrast, and zoom bounds were corrected. |
+| Visual direction | MET | Graphite/near-black scientific instrument aesthetic with restrained chrome, warm typography, selective amber retrieval highlights, no marketing hero or generic purple-blue SaaS treatment. |
+| Real ingestion pipeline | MET for implemented formats | Validation, format detection, extraction, normalization, metadata, deterministic chunking, embeddings, indexing, PCA-style projection, retrieval, grounded generation, citations, timings, deletion, and explicit errors are implemented. |
+| Scanned-PDF OCR | MISSING | PDF support is text-layer extraction only; image-only/scanned pages are not OCRed. |
+| PPT/PPTX ingestion | MISSING | PPTX is not supported in the current build. |
+| Deterministic chunking | MET | Configurable bounded size/overlap, stable chunk IDs, offsets, and chunk inspection. |
+| Real embeddings and retrieval | MET | Gemini `gemini-embedding-001` embeddings are generated server-side; the deployed smoke test returned 3072 dimensions and cosine retrieval score `0.7502`; projected coordinates are not used for ranking. |
+| OpenRouter grounded generation | MET | `OPENROUTER_API_KEY` is stored as a sensitive Vercel secret; default model is `qwen/qwen-2.5-72b-instruct`; production smoke query returned the correct answer with a source citation. |
+| Grounding and citation verification | PARTIAL | Evidence is passed to generation and citations link to actual chunks; independent claim-level citation verification/scoring is not implemented. |
+| 3D interaction | MET | Orbit, pan, zoom, reset, fit-to-view, hover, selection, source/chunk inspection, query highlighting, retrieval highlighting, legends, and a non-3D evidence alternative. |
+| Large-index performance | PARTIAL | Pixel-ratio/reduced-motion/visibility safeguards exist, but there is no clustering, instancing, or disclosed large-index subset strategy. |
+| Event-driven visual states | MET for implemented event path | Backend publishes structured pipeline progress; `/api/rag/progress` provides SSE; the client consumes live progress and completed mutations remain authoritative. Query provider internals are not streamed token-by-token. |
+| Upload/query visual sequence | PARTIAL | Upload and indexing stages stream real events; query pending/result state and real retrieval connectors are shown, but provider-level query embedding/retrieval/generation sub-events are not streamed individually. |
+| Keyboard/accessibility/reduced motion | PARTIAL | Keyboard query submission, focus states, labels, reduced-motion behavior, coarse-pointer safeguards, and evidence-table alternative exist; the WebGL point cloud itself is not a keyboard-semantic list. |
+| Exports and deletion | MET | Copy, TXT, selectable-text PDF, and document/chunk/query cleanup are implemented. |
+| Evaluation experiments | MISSING | No reproducible experiment runner, recall/precision dataset, answer-quality benchmark, or ablation-result persistence. |
+| Credential handling | MET | Gemini embeddings and OpenRouter generation credentials are managed server secrets; no browser key input remains, and secrets are not placed in source, URLs, logs, or exports. |
+| Persistence and ownership | PARTIAL | Workspace data remains process-memory/session-scoped; restart loss and lack of authenticated workspace ownership are disclosed. |
+| Error handling | MET | Invalid/empty/unsupported/duplicate/oversized files, provider/model/quota/network errors, dimension mismatches, missing index, export failures, and WebGL fallback have explicit paths. |
+| Vercel/GitHub delivery | MET | GitHub `bunny0arch/rag-quantum-lab`, commit `2da1ad2`, Vercel production deployment READY; root and `/api/health` return HTTP 200; production OpenRouter RAG smoke test passed. |
 
-## Honest conclusion
+## Production smoke test
 
-The project is a functional academic capstone RAG laboratory and not a decorative chatbot. The real extraction, embedding, indexing, retrieval, grounding, citation attachment, visualization, export, deletion, managed-key, and deployment paths are working for the implemented scope. The remaining specification gaps are scanned-PDF OCR, PPTX parsing, streamed SSE/WebSocket progress, large-index rendering strategy, claim-level citation verification, reproducible evaluation experiments, and durable authenticated multi-user persistence. These are intentionally disclosed rather than represented as complete.
+A throwaway production workspace was ingested and queried after deployment. The query “What does the observatory use for shielding?” returned: **“The observatory uses tungsten shielding [11a2wTlM0d-c001].”** Retrieval returned rank 1 with cosine score `0.7502449971071169`; query embedding took 228 ms, generation took 2457 ms, and total time was 2685 ms.
+
+## Remaining work required for a 100% claim
+
+Implement scanned-PDF OCR, PPTX parsing, large-index rendering strategy, claim-level citation verification, reproducible evaluation experiments, durable authenticated multi-user persistence, and finer-grained streamed query-stage events. These are the reasons the overall specification cannot honestly be marked fully met today.
