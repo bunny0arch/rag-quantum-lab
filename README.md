@@ -20,7 +20,7 @@ Useful checks are `pnpm check` for TypeScript and `pnpm test` for the existing V
 
 ## Current pipeline
 
-The server performs real format detection, extraction, deterministic chunking, and source metadata capture. It automatically uses the managed `GEMINI_API_KEY` project secret for the configured embedding and generation models, stores the returned vectors in the session workspace, computes a deterministic PCA-style 3D projection using power iteration for visualization, ranks query results with cosine similarity over the original vectors, and sends the actual top-k evidence to the configured generation model. End users do not paste a key into the interface; the client never receives raw embeddings or the secret. The provided credential was live-tested successfully with `gemini-embedding-001` (3072 dimensions) and `gemini-3.5-flash`.
+The server performs real format detection, extraction, deterministic chunking, and source metadata capture. It uses the managed `GEMINI_API_KEY` project secret for document/query embeddings and the managed `OPENROUTER_API_KEY` project secret for grounded generation, with Gemini generation retained only as a compatibility fallback if OpenRouter is unavailable. The default OpenRouter generation model is `qwen/qwen-2.5-72b-instruct`. Returned vectors stay in the session workspace, a deterministic PCA-style 3D projection is computed for visualization, query results use cosine similarity over the original vectors, and the actual top-k evidence is sent to the configured generation model. End users do not paste a key into the interface; the client never receives raw embeddings or provider secrets. The embedding credential was live-tested successfully with `gemini-embedding-001` (3072 dimensions), and the OpenRouter model was tested on grounded evidence.
 
 If a document is extracted before a key is available, the source register exposes an explicit re-index action. Provider errors are surfaced as actionable status messages without echoing provider response bodies.
 
@@ -30,7 +30,7 @@ TXT, Markdown, CSV, JSON, HTML, XML, common source/config files, PDF text layers
 
 ## Session and privacy behavior
 
-The current workspace is keyed by a browser session identifier and stored in server memory. It is intentionally not durable yet; a server restart clears documents, chunks, vectors, and query history. The Gemini key is stored as a managed server secret and is never sent from the browser, shown in the UI, stored in browser storage, placed in URLs, logged, or exported. The current public workspace procedures are suitable for a single-user capstone preview, not a multi-tenant deployment; authentication and server-enforced workspace ownership remain hardening work.
+The current workspace is keyed by a browser session identifier and stored in server memory. It is intentionally not durable yet; a server restart clears documents, chunks, vectors, and query history. The Gemini and OpenRouter credentials are stored as managed server secrets and are never sent from the browser, shown in the UI, stored in browser storage, placed in URLs, logged, or exported. The current public workspace procedures are suitable for a single-user capstone preview, not a multi-tenant deployment; authentication and server-enforced workspace ownership remain hardening work.
 
 ## Project files
 

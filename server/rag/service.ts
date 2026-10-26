@@ -171,6 +171,32 @@ async function geminiGenerate(apiKey: string, model: string, question: string, r
   return answer;
 }
 
+async function openRouterGenerate(apiKey: string, model: string, question: string, results: RetrievalCandidate[]): Promise<string> {
+  const evidence = results.map(result => `[${result.id}] ${result.sourceName} — ${result.location}\n${result.text}`).join("\n\n");
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+      "http-referer": process.env.PUBLIC_APP_URL || "https://rag-quantum-lab.vercel.app",
+      "x-title": "RAG Quantum Lab",
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: "You are the grounded generation stage of an academic RAG laboratory. Answer only from the supplied evidence. If the evidence does not support a reliable answer, say the evidence is insufficient. Attach the supplied chunk IDs in square brackets after supported claims. Never invent sources." },
+        { role: "user", content: `Question: ${question}\n\nEvidence:\n${evidence || "(No evidence retrieved.)"}` },
+      ],
+    }),
+  });
+  if (!response.ok) throw new Error(`OpenRouter generation failed (${response.status}). The managed OpenRouter provider may be unavailable or rate-limited.`);
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const answer = data.choices?.[0]?.message?.content?.trim();
+  if (!answer) throw new Error("OpenRouter returned an empty grounded answer.");
+  return answer;
+}
+
 function dot(a: number[], b: number[]) {
   let total = 0;
   for (let i = 0; i < Math.min(a.length, b.length); i += 1) total += a[i] * b[i];
@@ -253,10 +279,14 @@ function event(documentId: string, stage: PipelineStage, message: string) {
   return { documentId, stage, message, at: now() };
 }
 
-function configuredGeminiKey(override?: string) {
-  const key = override?.trim() || process.env.GEMINI_API_KEY?.trim();
-  if (!key) throw new Error("No Gemini API key is configured for this project.");
+function configuredGeminiKey() {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) throw new Error("The managed embedding provider is unavailable. Configure the project provider secret before querying.");
   return key;
+}
+
+function configuredOpenRouterKey() {
+  return process.env.OPENROUTER_API_KEY?.trim();
 }
 
 export async function snapshotWorkspace(workspaceId: string) {
@@ -326,7 +356,7 @@ export async function ingestFiles(input: {
         workspace.chunks.push(...chunks);
         document.stage = "ready";
         document.status = "extracted";
-        events.push(event(documentId, "ready", "Chunks ready; add a Gemini key to generate embeddings and index vectors"));
+        events.push(event(documentId, "ready", "Chunks extracted; managed embeddings are unavailable for this request"));
       }
       document.stage = "ready";
       document.status = apiKey ? "ready" : "extracted";
@@ -357,12 +387,12 @@ export async function queryWorkspace(input: {
   topK?: number;
 }): Promise<QueryResult> {
   const workspace = getWorkspace(input.workspaceId);
-  const apiKey = configuredGeminiKey(input.apiKey);
+  const apiKey = configuredGeminiKey();
   const started = Date.now();
   const question = input.question.trim();
   if (!question) throw new Error("Enter a question before retrieving evidence.");
   const indexed = workspace.chunks.filter(chunk => chunk.embedding);
-  if (!indexed.length) throw new Error("No indexed vectors are available. Add a Gemini key and process a document first.");
+  if (!indexed.length) throw new Error("No indexed vectors are available. Process a document before querying.");
 
   const embeddingStarted = Date.now();
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
@@ -392,7 +422,11 @@ export async function queryWorkspace(input: {
   let answer: string;
   let status: QueryRecord["status"] = "complete";
   try {
-    answer = await geminiGenerate(apiKey, cleanModelName(input.generationModel, "gemini-3.5-flash"), question, results);
+    const generationModel = cleanModelName(input.generationModel, "qwen/qwen-2.5-72b-instruct");
+    const openRouterKey = configuredOpenRouterKey();
+    answer = openRouterKey
+      ? await openRouterGenerate(openRouterKey, generationModel, question, results)
+      : await geminiGenerate(apiKey, generationModel.startsWith("gemini-") ? generationModel : "gemini-3.5-flash", question, results);
     if (results.length === 0 || results[0].score < 0.2) status = "insufficient";
   } catch (error) {
     const query: QueryRecord = {
@@ -416,7 +450,7 @@ export async function queryWorkspace(input: {
 
 export async function indexExtractedChunks(input: { workspaceId: string; apiKey?: string; embeddingModel?: string }): Promise<IngestResult> {
   const workspace = getWorkspace(input.workspaceId);
-  const apiKey = configuredGeminiKey(input.apiKey);
+  const apiKey = configuredGeminiKey();
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
   const pending = workspace.chunks.filter(chunk => !chunk.embedding);
   const events: IngestResult["events"] = [];
