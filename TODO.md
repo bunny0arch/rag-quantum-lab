@@ -9,7 +9,7 @@
 - [x] Use metallic instrument-style buttons with hover lift, pressed states, highlight bloom, and subtle whole-interface mouse parallax.
 - [x] Keep controls spatially anchored and lightweight, use progressive disclosure, preserve the central environment, and reveal evidence/answer contextually after a query rather than permanently occupying a large opaque panel.
 - [x] Provide accessible labels, keyboard navigation, sufficient contrast, responsive collapse for smaller screens, reduced-motion behavior, and a non-3D way to inspect chunks and retrieval results.
-- [ ] Add a true streamed event channel such as SSE or WebSockets for intermediate backend progress; the current build uses confirmed mutation state plus structured events returned by each completed operation.
+- [x] Add a true streamed SSE event channel for intermediate extraction, chunking, embedding, and indexing progress; completed mutation events remain available as the authoritative operation history.
 
 ## Real document ingestion and indexing
 - [x] Support drag-and-drop, file selection, and multiple files with explicit file validation, format detection, extraction, normalization, metadata extraction, deterministic configurable chunking, embedding generation, index insertion, and readiness states.

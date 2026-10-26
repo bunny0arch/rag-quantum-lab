@@ -102,14 +102,22 @@ export type IngestFileInput = {
   contentBase64: string;
 };
 
+export type PipelineProgressEvent = {
+  operationId: string;
+  workspaceId: string;
+  documentId: string;
+  stage: PipelineStage;
+  message: string;
+  current?: number;
+  total?: number;
+  percentage?: number;
+  at: string;
+};
+
 export type IngestResult = {
   snapshot: WorkspaceSnapshot;
-  events: Array<{
-    documentId: string;
-    stage: PipelineStage;
-    message: string;
-    at: string;
-  }>;
+  operationId: string;
+  events: PipelineProgressEvent[];
 };
 
 export type QueryResult = {
