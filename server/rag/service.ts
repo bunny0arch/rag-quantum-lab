@@ -163,6 +163,22 @@ async function geminiEmbed(apiKey: string, model: string, text: string, taskType
   return values;
 }
 
+async function geminiEmbedBatch(apiKey: string, model: string, texts: string[], taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY"): Promise<number[][]> {
+  if (!texts.length) return [];
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:batchEmbedContents`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify({ requests: texts.map(text => ({ model: `models/${model}`, content: { parts: [{ text }] }, taskType })) }),
+  });
+  if (!response.ok) {
+    throw new Error(`Batch embedding provider rejected the request (${response.status}). Check the key, model, quota, or network connection.`);
+  }
+  const data = await response.json() as { embeddings?: Array<{ values?: number[] }> };
+  const vectors = data.embeddings?.map(embedding => embedding.values || []) || [];
+  if (vectors.length !== texts.length || vectors.some(vector => !vector.length)) throw new Error("Batch embedding provider returned an incomplete vector response.");
+  return vectors;
+}
+
 async function geminiGenerate(apiKey: string, model: string, question: string, results: RetrievalCandidate[]): Promise<string> {
   const evidence = results.map(result => `[${result.id}] rank=${result.rank} similarity=${result.score.toFixed(4)} source=${result.sourceName} location=${result.location}\n${result.text}`).join("\n\n");
   const prompt = [
@@ -374,9 +390,13 @@ export async function ingestFiles(input: {
         document.stage = "embedding";
         events.push(event(input.workspaceId, operationId, documentId, "embedding", `Embedding 0/${chunks.length} chunks with ${embeddingModel}`, { current: 0, total: chunks.length }));
         const started = Date.now();
-        for (const [index, chunk] of chunks.entries()) {
-          chunk.embedding = await geminiEmbed(apiKey, embeddingModel, chunk.text, "RETRIEVAL_DOCUMENT");
-          events.push(event(input.workspaceId, operationId, documentId, "embedding", `Embedded chunk ${index + 1}/${chunks.length}`, { current: index + 1, total: chunks.length }));
+        const batchSize = 32;
+        for (let start = 0; start < chunks.length; start += batchSize) {
+          const batch = chunks.slice(start, start + batchSize);
+          const vectors = await geminiEmbedBatch(apiKey, embeddingModel, batch.map(chunk => chunk.text), "RETRIEVAL_DOCUMENT");
+          vectors.forEach((vector, offset) => { batch[offset].embedding = vector; });
+          const completed = start + batch.length;
+          events.push(event(input.workspaceId, operationId, documentId, "embedding", `Embedded chunks ${start + 1}-${completed}/${chunks.length}`, { current: completed, total: chunks.length }));
         }
         const existingDimension = workspace.chunks.find(chunk => chunk.embedding)?.embedding?.length;
         const nextDimension = chunks[0]?.embedding?.length;
@@ -493,10 +513,13 @@ export async function indexExtractedChunks(input: { workspaceId: string; apiKey?
   if (!pending.length) return { snapshot: toSnapshot(input.workspaceId, workspace), operationId, events };
   const embedded: Array<{ chunk: InternalChunk; vector: number[] }> = [];
   try {
-    for (const [index, chunk] of pending.entries()) {
-      const vector = await geminiEmbed(apiKey, model, chunk.text, "RETRIEVAL_DOCUMENT");
-      embedded.push({ chunk, vector });
-      events.push(event(input.workspaceId, operationId, chunk.documentId, "embedding", `Embedded extracted chunk ${index + 1}/${pending.length}`, { current: index + 1, total: pending.length }));
+    const batchSize = 32;
+    for (let start = 0; start < pending.length; start += batchSize) {
+      const batch = pending.slice(start, start + batchSize);
+      const vectors = await geminiEmbedBatch(apiKey, model, batch.map(chunk => chunk.text), "RETRIEVAL_DOCUMENT");
+      vectors.forEach((vector, offset) => embedded.push({ chunk: batch[offset], vector }));
+      const completed = start + batch.length;
+      events.push(event(input.workspaceId, operationId, batch[0].documentId, "embedding", `Embedded extracted chunks ${start + 1}-${completed}/${pending.length}`, { current: completed, total: pending.length }));
     }
     const existingDimension = workspace.chunks.find(chunk => chunk.embedding)?.embedding?.length;
     const nextDimension = embedded[0]?.vector.length;
