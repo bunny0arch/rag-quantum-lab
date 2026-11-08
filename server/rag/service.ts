@@ -16,6 +16,7 @@ import type {
 } from "@shared/types";
 
 const MAX_FILE_BYTES = 12 * 1024 * 1024;
+const MAX_IMAGE_EDGE = 3072;
 const DEFAULT_CHUNK_SIZE = 780;
 const DEFAULT_OVERLAP = 120;
 const DEFAULT_TOP_K = 5;
@@ -166,7 +167,44 @@ async function preparePdfRuntime() {
   runtime.Path2D ||= canvas.Path2D;
 }
 
-async function extractText(file: IngestFileInput): Promise<{ text: string; location: string }> {
+async function geminiExtractVisualText(apiKey: string, bytes: Buffer, mimeType: string, sourceLabel: string) {
+  const prompt = `Read this ${sourceLabel} for a grounded retrieval index. Transcribe all legible text faithfully, preserving labels, table values, and page/slide order. Then add a concise description of visible diagrams, charts, objects, and their relationships. Do not infer facts that are not visibly supported; mark illegible text as [unclear]. If there is no legible text, provide only a concrete visual description.`;
+  const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType, data: bytes.toString("base64") } }] }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 8192 },
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Visual text extraction failed (${response.status}). Check the Gemini key, model availability, quota, or file format.`);
+  }
+  const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+  const text = normalizeText(data.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("\n") || "");
+  if (!text) throw new Error("Gemini returned no readable text or visual description for this file.");
+  return text;
+}
+
+async function extractImageText(buffer: Buffer, apiKey?: string) {
+  if (!apiKey) throw new Error("Image indexing requires the managed GEMINI_API_KEY so the image can be read and described.");
+  let imageBytes = buffer;
+  try {
+    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+    const image = await loadImage(buffer);
+    if (!image.width || !image.height) throw new Error("The image has no readable dimensions.");
+    const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(image.width, image.height));
+    const canvas = createCanvas(Math.max(1, Math.round(image.width * scale)), Math.max(1, Math.round(image.height * scale)));
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    imageBytes = canvas.toBuffer("image/png");
+  } catch (error) {
+    throw new Error(`Could not decode this image. Use a valid PNG, JPEG, WebP, GIF, or BMP file. ${error instanceof Error ? error.message : ""}`.trim());
+  }
+  return geminiExtractVisualText(apiKey, imageBytes, "image/png", "image");
+}
+
+async function extractText(file: IngestFileInput, apiKey?: string): Promise<{ text: string; location: string }> {
   if (file.size > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MB limit.`);
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.contentBase64) || file.contentBase64.length % 4 === 1) {
     throw new Error("The uploaded payload is not valid base64.");
@@ -182,6 +220,12 @@ async function extractText(file: IngestFileInput): Promise<{ text: string; locat
   if (extension === "rtf") {
     return { text: normalizeText(rtfToText(new TextDecoder("utf-8", { fatal: false }).decode(buffer))), location: "RTF text" };
   }
+  if (extension === "svg") {
+    return { text: normalizeText(htmlToText(new TextDecoder("utf-8", { fatal: false }).decode(buffer))), location: "SVG labels and text" };
+  }
+  if (["png", "jpg", "jpeg", "webp", "gif", "bmp"].includes(extension) || file.mimeType.toLowerCase().startsWith("image/")) {
+    return { text: await extractImageText(buffer, apiKey), location: "image OCR and visual description" };
+  }
   if (["pptx", "odt", "odp", "epub"].includes(extension)) {
     const text = normalizeText(textFromOfficeArchive(buffer, extension));
     if (!text) throw new Error(`No readable text was found in this .${extension} file.`);
@@ -195,9 +239,16 @@ async function extractText(file: IngestFileInput): Promise<{ text: string; locat
     await preparePdfRuntime();
     const { PDFParse } = await import("pdf-parse");
     const parser = new PDFParse({ data: buffer });
-    const result = await parser.getText();
-    await parser.destroy();
-    return { text: normalizeText(result.text), location: "PDF text layer" };
+    let text = "";
+    try {
+      const result = await parser.getText();
+      text = normalizeText(result.text);
+    } finally {
+      await parser.destroy();
+    }
+    if (text) return { text, location: "PDF text layer" };
+    if (!apiKey) throw new Error("This PDF has no readable text layer. Scanned-PDF OCR requires the managed GEMINI_API_KEY.");
+    return { text: await geminiExtractVisualText(apiKey, buffer, "application/pdf", "scanned PDF"), location: "scanned-PDF OCR and visual description" };
   }
 
   if (extension === "docx") {
@@ -412,6 +463,7 @@ function fallbackQueryProjection(results: RetrievalCandidate[], points: Projecte
 function toSnapshot(workspaceId: string, workspace: Workspace): WorkspaceSnapshot {
   const indexed = workspace.chunks.filter(chunk => chunk.embedding);
   const dimensions = indexed[0]?.embedding?.length;
+  const fullyIndexed = workspace.chunks.length > 0 && indexed.length === workspace.chunks.length;
   return {
     workspaceId,
     documents: workspace.documents,
@@ -422,7 +474,7 @@ function toSnapshot(workspaceId: string, workspace: Workspace): WorkspaceSnapsho
     }) : workspace.fallbackPoints || [],
     queries: workspace.queries,
     index: {
-      status: indexed.length ? "ready" : workspace.chunks.length ? "extracted" : "empty",
+      status: fullyIndexed ? "ready" : workspace.chunks.length ? "extracted" : "empty",
       embeddingModel: workspace.embeddingModel,
       dimension: dimensions,
       metric: "cosine_similarity",
@@ -448,7 +500,7 @@ function event(workspaceId: string, operationId: string, documentId: string, sta
 
 function configuredGeminiKey() {
   const key = process.env.GEMINI_API_KEY?.trim();
-  if (!key) throw new Error("The managed embedding provider is unavailable. Configure the project provider secret before querying.");
+  if (!key) throw new Error("The managed embedding provider is unavailable. Configure GEMINI_API_KEY before indexing or querying.");
   return key;
 }
 
@@ -498,7 +550,7 @@ export async function ingestFiles(input: {
       if (duplicate) throw new Error("This filename and byte size already exist in the session.");
       document.stage = "extracting";
       events.push(event(input.workspaceId, operationId, documentId, "extracting", `Extracting content from ${file.name}`));
-      const extracted = await extractText(file);
+      const extracted = await extractText(file, apiKey);
       if (!extracted.text) throw new Error("No text was extracted from this file.");
       document.extractedChars = extracted.text.length;
       events.push(event(input.workspaceId, operationId, documentId, "extracting", `Extracted ${extracted.text.length.toLocaleString()} characters from ${file.name}`));
@@ -661,7 +713,6 @@ export async function indexExtractedChunks(input: {
 }): Promise<IngestResult> {
   const workspace = getWorkspace(input.workspaceId);
   const operationId = nanoid(12);
-  const apiKey = configuredGeminiKey();
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
   if (input.fallbackChunks?.length) {
     const existingIds = new Set(workspace.chunks.map(chunk => chunk.id));
@@ -674,6 +725,21 @@ export async function indexExtractedChunks(input: {
   const pending = workspace.chunks.filter(chunk => !chunk.embedding);
   const events: IngestResult["events"] = [];
   if (!pending.length) return { snapshot: toSnapshot(input.workspaceId, workspace), operationId, events };
+  let apiKey: string;
+  try {
+    apiKey = configuredGeminiKey();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The embedding provider is unavailable.";
+    const pendingDocumentIds = new Set(pending.map(chunk => chunk.documentId));
+    workspace.documents.forEach(document => {
+      if (!pendingDocumentIds.has(document.id)) return;
+      document.status = "extracted";
+      document.stage = "ready";
+      document.error = message;
+      events.push(event(input.workspaceId, operationId, document.id, "error", message));
+    });
+    return { snapshot: toSnapshot(input.workspaceId, workspace), operationId, events };
+  }
   const embedded: Array<{ chunk: InternalChunk; vector: number[] }> = [];
   try {
     const batchSize = 32;
@@ -691,18 +757,26 @@ export async function indexExtractedChunks(input: {
     }
     workspace.embeddingModel = model;
     embedded.forEach(({ chunk, vector }) => { chunk.embedding = vector; });
-    const byDocument = new Map<string, number>();
-    embedded.forEach(({ chunk }) => byDocument.set(chunk.documentId, (byDocument.get(chunk.documentId) || 0) + 1));
+    const pendingDocumentIds = new Set(pending.map(chunk => chunk.documentId));
     workspace.documents.forEach(document => {
-      const count = byDocument.get(document.id);
-      if (!count) return;
-      document.status = "ready";
+      if (!pendingDocumentIds.has(document.id)) return;
+      document.indexedChunkCount = workspace.chunks.filter(chunk => chunk.documentId === document.id && chunk.embedding).length;
+      document.status = document.indexedChunkCount === document.chunkCount ? "ready" : "extracted";
       document.stage = "ready";
-      document.indexedChunkCount = document.chunkCount;
-      events.push(event(input.workspaceId, operationId, document.id, "indexing", `Indexed ${count} extracted chunks with ${model}`, { current: document.indexedChunkCount, total: document.chunkCount }));
+      document.error = undefined;
+      events.push(event(input.workspaceId, operationId, document.id, "indexing", `Indexed ${document.indexedChunkCount}/${document.chunkCount} chunks with ${model}`, { current: document.indexedChunkCount, total: document.chunkCount }));
     });
   } catch (error) {
-    throw new Error(error instanceof Error ? error.message : "Indexing extracted chunks failed.");
+    const message = error instanceof Error ? error.message : "Indexing extracted chunks failed.";
+    const pendingDocumentIds = new Set(pending.map(chunk => chunk.documentId));
+    workspace.documents.forEach(document => {
+      if (!pendingDocumentIds.has(document.id)) return;
+      document.status = "extracted";
+      document.stage = "ready";
+      document.error = `Indexing failed: ${message}`;
+      events.push(event(input.workspaceId, operationId, document.id, "error", document.error));
+    });
+    return { snapshot: toSnapshot(input.workspaceId, workspace), operationId, events };
   }
   const indexed = workspace.chunks.filter(chunk => chunk.embedding);
   workspace.projection = fitPca(indexed.map(chunk => chunk.embedding!));

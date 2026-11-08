@@ -5,6 +5,7 @@ import { AdaptiveNav } from "@/components/ui/AdaptiveNav";
 import SlideCommit from "@/components/SlideCommit";
 import SpecularButton from "@/components/SpecularButton";
 import ThoughtLine from "@/components/ThoughtLine";
+import { resolveSourceFileType } from "@/lib/source-file-type";
 import { trpc } from "@/lib/trpc";
 import type { DocumentRecord, ProjectedPoint, QueryRecord, WorkspaceSnapshot } from "@shared/types";
 
@@ -136,8 +137,30 @@ export default function Home() {
   }, [workspaceId]);
 
   const snapshotQuery = trpc.rag.snapshot.useQuery({ workspaceId }, { refetchOnWindowFocus: false });
-  const ingestMutation = trpc.rag.ingest.useMutation({ onMutate: () => { setLastEvent("Upload accepted; streaming extraction progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => setLocalError(error.message) });
-  const indexMutation = trpc.rag.indexExtracted.useMutation({ onMutate: () => { setLastEvent("Re-index accepted; streaming embedding progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const providerStatusQuery = trpc.rag.providerStatus.useQuery(undefined, { refetchOnWindowFocus: false, staleTime: 60_000 });
+  const ingestMutation = trpc.rag.ingest.useMutation({
+    onMutate: () => { setLastEvent("Upload accepted; extracting, chunking, and indexing"); setSourceDockOpen(true); },
+    onSuccess: result => {
+      const operationDocumentIds = new Set(result.events.map(item => item.documentId));
+      const failedDocuments = result.snapshot.documents.filter(document => operationDocumentIds.has(document.id) && document.error);
+      const waitingDocuments = result.snapshot.documents.filter(document => operationDocumentIds.has(document.id) && document.status === "extracted");
+      setSnapshot(result.snapshot);
+      setLastEvent(failedDocuments.length ? `${failedDocuments.length} source${failedDocuments.length === 1 ? "" : "s"} need attention` : waitingDocuments.length ? `${waitingDocuments.length} source${waitingDocuments.length === 1 ? "" : "s"} extracted; vectors still needed` : result.events.at(-1)?.message || "Pipeline event received");
+      setSourceDockOpen(true);
+      setLocalError(failedDocuments[0]?.error ? `${failedDocuments[0].name}: ${failedDocuments[0].error}` : "");
+    },
+    onError: error => { setSourceDockOpen(true); setLocalError(error.message); },
+  });
+  const indexMutation = trpc.rag.indexExtracted.useMutation({
+    onMutate: () => { setLastEvent("Re-index accepted; embedding extracted chunks"); },
+    onSuccess: result => {
+      const failedDocument = result.snapshot.documents.find(document => document.error && result.events.some(item => item.documentId === document.id && item.stage === "error"));
+      setSnapshot(result.snapshot);
+      setLastEvent(failedDocument ? `Indexing needs attention: ${failedDocument.name}` : result.events.at(-1)?.message || "Extracted chunks indexed");
+      setLocalError(failedDocument?.error ? `${failedDocument.name}: ${failedDocument.error}` : "");
+    },
+    onError: error => setLocalError(error.message),
+  });
   const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(previous => previous ? { ...result.snapshot, documents: previous.documents, chunks: previous.chunks, points: previous.points, index: previous.index, queries: [result.query, ...previous.queries.filter(queryRecord => queryRecord.id !== result.query.id)].slice(0, 100) } : result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const removeMutation = trpc.rag.removeDocument.useMutation({ onSuccess: result => { setSnapshot(result); setSelectedChunkId(undefined); } });
   const resetMutation = trpc.rag.resetWorkspace.useMutation({ onSuccess: result => { setSnapshot(result); setActiveQueryId(undefined); setSelectedChunkId(undefined); setEvidenceOpen(false); setLastEvent("Workspace reset; source field cleared"); setLocalError(""); }, onError: error => setLocalError(error.message) });
@@ -161,7 +184,7 @@ export default function Home() {
   const extractedDocuments = current?.documents.filter(document => document.status === "extracted").length || 0;
   const readyDocuments = current?.documents.filter(document => document.status === "ready").length || 0;
   const isBusy = ingestMutation.isPending || indexMutation.isPending || queryMutation.isPending;
-  const currentTone = localError ? "error" : isBusy ? "warn" : indexedCount ? "ready" : current?.chunks.length ? "warn" : "neutral";
+  const currentTone = localError ? "error" : isBusy ? "warn" : current?.index.status === "ready" ? "ready" : current?.chunks.length ? "warn" : "neutral";
   const ingestFiles = useCallback(async (files: File[]) => {
     if (!files.length) return;
     setLocalError("");
@@ -214,16 +237,26 @@ export default function Home() {
       <header className="floating-topbar">
         <div className="brand-lockup"><div className="brand-mark"><span /><span /></div><div><div className="brand-name">RAG QUANTUM LAB</div><div className="brand-subtitle">retrieval observatory / live session</div></div></div>
         <AdaptiveNav activeId={activeNav} />
-        <div className="topbar-status"><StatusDot tone={currentTone} /><span>{isBusy ? "PROCESSING" : indexedCount ? "INDEX READY" : current?.chunks.length ? "EXTRACTED" : "AWAITING SOURCE"}</span><SpecularButton size="sm" className="icon-button specular-icon-button" onClick={() => setSettingsOpen(value => !value)} aria-label="Open session configuration"><Settings2 size={15} /></SpecularButton></div>
+        <div className="topbar-status"><StatusDot tone={currentTone} /><span>{isBusy ? "PROCESSING" : current?.index.status === "ready" ? "INDEX READY" : current?.index.status === "extracted" ? indexedCount ? "PARTIAL INDEX" : "NEEDS INDEXING" : "AWAITING SOURCE"}</span><SpecularButton size="sm" className="icon-button specular-icon-button" onClick={() => setSettingsOpen(value => !value)} aria-label="Open session configuration"><Settings2 size={15} /></SpecularButton></div>
       </header>
 
       <main className="immersive-ui">
         <section id="sources" className={`source-dock ${sourceDockOpen ? "is-open" : "is-collapsed"}`} aria-label="Floating source register">
           <div className="dock-kicker"><span>01 / SOURCES</span><SpecularButton size="sm" className="icon-button specular-icon-button" onClick={() => setSourceDockOpen(value => !value)} aria-label={sourceDockOpen ? "Collapse sources" : "Expand sources"}>{sourceDockOpen ? <ChevronDown size={14} /> : <Archive size={14} />}</SpecularButton></div>
           {sourceDockOpen ? <>
-            <div className="floating-drop-zone" onDragOver={event => event.preventDefault()} onDrop={onDrop}><UploadCloud size={18} strokeWidth={1.4} /><strong>Drop source</strong><span>or <label htmlFor="file-input">select files</label></span><input id="file-input" type="file" multiple hidden accept="*/*" onChange={event => { void ingestFiles(Array.from(event.target.files || [])); event.target.value = ""; }} /></div>
+            <div className="floating-drop-zone" onDragOver={event => event.preventDefault()} onDrop={onDrop}><UploadCloud size={18} strokeWidth={1.4} /><strong>Drop source</strong><span>or <label htmlFor="file-input">select files</label></span><small className="supported-formats">Text · PDF · Office · images</small><input id="file-input" type="file" multiple hidden accept="*/*" onChange={event => { void ingestFiles(Array.from(event.target.files || [])); event.target.value = ""; }} /></div>
             <div className="source-dock__meta"><span>{current?.documents.length || 0} source{current?.documents.length === 1 ? "" : "s"}</span><span className="mono">{indexedCount} vectors</span></div>
-            {current?.documents.length ? <div className="floating-source-list">{current.documents.map(document => <article className="floating-source-row" key={document.id}><span className={`source-state source-state--${document.status}`} /> <div><strong title={document.name}>{document.name}</strong><small>{stageText(document.stage)} · {document.chunkCount || "—"} chunks</small></div><button onClick={() => removeMutation.mutate({ workspaceId, documentId: document.id })} aria-label={`Remove ${document.name}`}><Trash2 size={12} /></button></article>)}</div> : <div className="source-empty"><Archive size={15} /><span>Sources become chunks, then vectors.</span></div>}
+            {current?.documents.length ? <div className="floating-source-list">{current.documents.map(document => {
+              const sourceType = resolveSourceFileType(document.name, document.mimeType);
+              const SourceIcon = sourceType.Icon;
+              const stateLabel = document.status === "ready" ? "indexed" : document.status === "extracted" ? "awaiting vectors" : document.status === "error" ? "error" : stageText(document.stage);
+              return <article className={`floating-source-row floating-source-row--${document.status}`} key={document.id}>
+                <span className={`source-file-icon source-file-icon--${sourceType.kind}`} aria-label={`${sourceType.label} source`} role="img" title={`${sourceType.label} (${sourceType.shortLabel})`}><SourceIcon size={14} aria-hidden="true" /></span>
+                <span className={`source-state source-state--${document.status}`} aria-label={stateLabel} title={stateLabel} />
+                <div><strong title={document.name}>{document.name}</strong><small>{stateLabel} · {document.chunkCount} chunks · {document.indexedChunkCount}/{document.chunkCount} vectors</small>{document.error && <small className="source-error" title={document.error}>{document.error}</small>}</div>
+                <button onClick={() => removeMutation.mutate({ workspaceId, documentId: document.id })} aria-label={`Remove ${document.name}`}><Trash2 size={12} /></button>
+              </article>;
+            })}</div> : <div className="source-empty"><Archive size={15} /><span>Sources become chunks, then vectors.</span></div>}
             {extractedDocuments > 0 && <SpecularButton size="sm" className="floating-index-button" disabled={indexMutation.isPending} onClick={() => indexMutation.mutate({ workspaceId, embeddingModel, fallbackChunks: (current?.chunks || []).slice(0, 2000), fallbackDocuments: current?.documents || [] })}>{indexMutation.isPending ? <Loader2 size={12} className="spin" /> : <Database size={12} />} index {extractedDocuments} extracted</SpecularButton>}
             {current?.documents.length ? <SlideCommit label="Slide to clear sources" doneLabel="Cleared" errorLabel="Reset failed" width={220} height={38} radius={19} holdMs={900} disabled={resetMutation.isPending} onConfirm={resetWorkspace} /> : null}
           </> : <SpecularButton size="sm" className="source-collapsed-button" onClick={() => setSourceDockOpen(true)}><span className="source-count">{current?.documents.length || 0}</span><span>source register</span></SpecularButton>}
@@ -237,7 +270,7 @@ export default function Home() {
 
         {selectedChunk && <aside className="chunk-inspector" aria-label="Selected chunk inspection"><div className="chunk-inspector__head"><span className="eyebrow">CHUNK INSPECTOR</span><button onClick={() => setSelectedChunkId(undefined)} aria-label="Close chunk inspector"><X size={13} /></button></div><strong>{selectedChunk.sourceName}</strong><span className="mono">{selectedChunk.id} · {selectedChunk.location}</span><p>{selectedChunk.text}</p><div className="chunk-inspector__meta"><span><Layers3 size={12} /> {selectedChunk.embeddingDimension ? `${selectedChunk.embeddingDimension}D vector` : "not embedded"}</span><span><Gauge size={12} /> {selectedChunk.charCount} chars</span></div></aside>}
 
-        {settingsOpen && <aside className="floating-config" aria-label="Session configuration"><div className="floating-config__head"><span><KeyRound size={13} /> MANAGED SESSION CONFIGURATION</span><button onClick={() => setSettingsOpen(false)} aria-label="Close configuration"><X size={14} /></button></div><div className="managed-key-status"><span className="status-dot status-dot--ready" /><span>Provider credentials active on the server</span></div><div className="config-grid"><label>Embedding model<input value={embeddingModel} onChange={event => setEmbeddingModel(event.target.value)} /></label><label>Generation model<input value={generationModel} onChange={event => setGenerationModel(event.target.value)} /></label><label>Chunk size<input type="number" min={160} max={4000} value={chunkSize} onChange={event => setChunkSize(Number(event.target.value) || 780)} /></label><label>Overlap<input type="number" min={0} max={2000} value={overlap} onChange={event => setOverlap(Number(event.target.value) || 0)} /></label></div><p>Provider credentials are managed server secrets. They are never sent from the browser, displayed, exported, or written to source files.</p></aside>}
+        {settingsOpen && <aside className="floating-config" aria-label="Session configuration"><div className="floating-config__head"><span><KeyRound size={13} /> MANAGED SESSION CONFIGURATION</span><button onClick={() => setSettingsOpen(false)} aria-label="Close configuration"><X size={14} /></button></div><div className="managed-key-status"><StatusDot tone={providerStatusQuery.data?.embeddingsConfigured ? "ready" : providerStatusQuery.isLoading ? "neutral" : "warn"} /><span>{providerStatusQuery.isLoading ? "Checking provider configuration…" : providerStatusQuery.data?.embeddingsConfigured ? "Gemini embeddings and image reading are configured." : "GEMINI_API_KEY is missing; text can be chunked, but vectors and image reading are unavailable."}</span></div><div className="config-grid"><label>Embedding model<input value={embeddingModel} onChange={event => setEmbeddingModel(event.target.value)} /></label><label>Generation model<input value={generationModel} onChange={event => setGenerationModel(event.target.value)} /></label><label>Chunk size<input type="number" min={160} max={4000} value={chunkSize} onChange={event => setChunkSize(Number(event.target.value) || 780)} /></label><label>Overlap<input type="number" min={0} max={2000} value={overlap} onChange={event => setOverlap(Number(event.target.value) || 0)} /></label></div><p>Provider credentials are managed server secrets. They are never sent from the browser, displayed, exported, or written to source files.</p></aside>}
 
         {localError && <div className="floating-error"><AlertCircle size={14} /><span>{localError}</span><button onClick={() => setLocalError("")} aria-label="Dismiss error"><X size={13} /></button></div>}
 
