@@ -3,6 +3,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { ProjectedPoint } from "@shared/types";
+import { toFallbackMapPosition, toScenePosition } from "@/lib/projection-layout";
 
 const AMBIENT_COUNT = 280;
 
@@ -127,7 +128,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
 
   useEffect(() => {
     if (props.resetToken > 0) {
-      camera.position.set(4.8, 2.4, 6.8);
+      camera.position.set(5.3, 2.65, 7.5);
       controlsRef.current?.target.set(0, 0, 0);
       controlsRef.current?.update();
     }
@@ -136,22 +137,22 @@ function SceneContents({ props }: { props: UniverseProps }) {
   useEffect(() => {
     if (props.fitToken > 0 && props.points.length > 0) {
       const box = new THREE.Box3();
-      props.points.forEach(point => box.expandByPoint(new THREE.Vector3(point.x * 2.8, point.y * 2.2, point.z * 2.8)));
+      props.points.forEach(point => box.expandByPoint(new THREE.Vector3(...toScenePosition(point))));
       const center = box.getCenter(new THREE.Vector3());
       const radius = Math.max(2.5, box.getSize(new THREE.Vector3()).length() * 0.55);
-      const distance = Math.min(9.5, Math.max(5.2, radius / Math.tan(THREE.MathUtils.degToRad(42 / 2)) * 1.18));
+      const distance = Math.min(12.5, Math.max(5.2, radius / Math.tan(THREE.MathUtils.degToRad(42 / 2)) * 1.18));
       camera.position.set(center.x + distance * 0.72, center.y + distance * 0.38, center.z + distance * 0.72);
       controlsRef.current?.target.copy(center);
       controlsRef.current?.update();
     }
   }, [camera, props.fitToken, props.points]);
 
-  const queryPosition = props.queryProjection ? [props.queryProjection[0] * 2.8, props.queryProjection[1] * 2.2, props.queryProjection[2] * 2.8] as [number, number, number] : undefined;
+  const queryPosition = props.queryProjection ? toScenePosition({ x: props.queryProjection[0], y: props.queryProjection[1], z: props.queryProjection[2] }) : undefined;
   const retrievedPoints = props.points.filter(point => props.highlightedIds.has(point.chunkId));
 
   return (
     <>
-      <PerspectiveCamera makeDefault position={[4.8, 2.4, 6.8]} fov={42} near={0.1} far={200}>
+      <PerspectiveCamera makeDefault position={[5.3, 2.65, 7.5]} fov={42} near={0.1} far={200}>
         <WaveBackdrop reducedMotion={props.reducedMotion} />
       </PerspectiveCamera>
       <ambientLight intensity={0.38} color="#c9d1ce" />
@@ -167,7 +168,7 @@ function SceneContents({ props }: { props: UniverseProps }) {
           return (
             <mesh
               key={point.chunkId}
-              position={[point.x * 2.8, point.y * 2.2, point.z * 2.8]}
+              position={toScenePosition(point)}
               scale={selected ? 1.8 : active ? 1.5 : 1}
               onPointerOver={event => { event.stopPropagation(); props.onHover(point); }}
               onPointerOut={event => { event.stopPropagation(); props.onHover(undefined); }}
@@ -180,9 +181,9 @@ function SceneContents({ props }: { props: UniverseProps }) {
         })}
       </group>
       {queryPosition && <QueryMarker position={queryPosition} />}
-      {queryPosition && retrievedPoints.map(point => <Line key={`link-${point.chunkId}`} points={[queryPosition, [point.x * 2.8, point.y * 2.2, point.z * 2.8]]} color="#ffd477" lineWidth={1.4} transparent opacity={0.9} depthTest={false} renderOrder={15} />)}
+      {queryPosition && retrievedPoints.map(point => <Line key={`link-${point.chunkId}`} points={[queryPosition, toScenePosition(point)]} color="#ffd477" lineWidth={1.4} transparent opacity={0.9} depthTest={false} renderOrder={15} />)}
       </group>
-      <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} minDistance={3.2} maxDistance={10.5} makeDefault />
+      <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} minDistance={3.2} maxDistance={14} makeDefault />
     </>
   );
 }
@@ -199,17 +200,19 @@ function supportsWebGL2() {
 }
 
 function TwoDimensionalEvidenceMap({ props }: { props: UniverseProps }) {
+  const queryPosition = props.queryProjection ? toFallbackMapPosition({ x: props.queryProjection[0], y: props.queryProjection[1] }) : undefined;
   return (
     <div className="scene-fallback-map" aria-label="2D fallback evidence map">
       <div className="scene-fallback-map__head"><span>2D EVIDENCE MAP</span><span>WebGL unavailable · source points remain interactive</span></div>
       <div className="scene-fallback-map__plot">
         <span className="scene-fallback-map__axis scene-fallback-map__axis--x" />
         <span className="scene-fallback-map__axis scene-fallback-map__axis--y" />
-        {props.queryProjection && <span className="scene-fallback-map__query" style={{ left: `${50 + props.queryProjection[0] * 38}%`, top: `${50 - props.queryProjection[1] * 38}%` }} aria-label="Query position" />}
+        {queryPosition && <span className="scene-fallback-map__query" style={{ left: `${queryPosition.left}%`, top: `${queryPosition.top}%` }} aria-label="Query position" />}
         {props.points.map(point => {
           const selected = props.selectedId === point.chunkId;
           const highlighted = props.highlightedIds.has(point.chunkId);
-          return <button key={point.chunkId} className={`scene-fallback-map__point ${highlighted ? "is-highlighted" : ""} ${selected ? "is-selected" : ""}`} style={{ left: `${50 + point.x * 38}%`, top: `${50 - point.y * 38}%` }} title={`${point.sourceName}: ${point.excerpt}`} aria-label={`Inspect ${point.sourceName}, ${point.chunkId}`} onMouseEnter={() => props.onHover(point)} onMouseLeave={() => props.onHover(undefined)} onClick={() => props.onSelect(point)} />;
+          const position = toFallbackMapPosition(point);
+          return <button key={point.chunkId} className={`scene-fallback-map__point ${highlighted ? "is-highlighted" : ""} ${selected ? "is-selected" : ""}`} style={{ left: `${position.left}%`, top: `${position.top}%` }} title={`${point.sourceName}: ${point.excerpt}`} aria-label={`Inspect ${point.sourceName}, ${point.chunkId}`} onMouseEnter={() => props.onHover(point)} onMouseLeave={() => props.onHover(undefined)} onClick={() => props.onSelect(point)} />;
         })}
         {!props.points.length && <p className="scene-fallback-map__empty">Upload a document to map its indexed chunks.</p>}
       </div>
