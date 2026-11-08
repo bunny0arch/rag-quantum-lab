@@ -1,6 +1,6 @@
 import { Line, OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { ProjectedPoint } from "@shared/types";
 
@@ -16,6 +16,7 @@ type UniverseProps = {
   resetToken: number;
   fitToken: number;
   reducedMotion: boolean;
+  onVisualizationModeChange?: (mode: "2d" | "3d") => void;
 };
 
 function AmbientField({ reducedMotion }: { reducedMotion: boolean }) {
@@ -173,7 +174,41 @@ function SceneContents({ props }: { props: UniverseProps }) {
   );
 }
 
+function supportsWebGL2() {
+  try {
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("webgl2");
+    context?.getExtension("WEBGL_lose_context")?.loseContext();
+    return Boolean(context);
+  } catch {
+    return false;
+  }
+}
+
+function TwoDimensionalEvidenceMap({ props }: { props: UniverseProps }) {
+  return (
+    <div className="scene-fallback-map" aria-label="2D fallback evidence map">
+      <div className="scene-fallback-map__head"><span>2D EVIDENCE MAP</span><span>WebGL unavailable · source points remain interactive</span></div>
+      <div className="scene-fallback-map__plot">
+        <span className="scene-fallback-map__axis scene-fallback-map__axis--x" />
+        <span className="scene-fallback-map__axis scene-fallback-map__axis--y" />
+        {props.queryProjection && <span className="scene-fallback-map__query" style={{ left: `${50 + props.queryProjection[0] * 38}%`, top: `${50 - props.queryProjection[1] * 38}%` }} aria-label="Query position" />}
+        {props.points.map(point => {
+          const selected = props.selectedId === point.chunkId;
+          const highlighted = props.highlightedIds.has(point.chunkId);
+          return <button key={point.chunkId} className={`scene-fallback-map__point ${highlighted ? "is-highlighted" : ""} ${selected ? "is-selected" : ""}`} style={{ left: `${50 + point.x * 38}%`, top: `${50 - point.y * 38}%` }} title={`${point.sourceName}: ${point.excerpt}`} aria-label={`Inspect ${point.sourceName}, ${point.chunkId}`} onMouseEnter={() => props.onHover(point)} onMouseLeave={() => props.onHover(undefined)} onClick={() => props.onSelect(point)} />;
+        })}
+        {!props.points.length && <p className="scene-fallback-map__empty">Upload a document to map its indexed chunks.</p>}
+      </div>
+      <div className="scene-fallback-map__legend"><span><i /> chunks</span><span><i className="is-highlighted" /> retrieved evidence</span><span><i className="is-query" /> query</span></div>
+    </div>
+  );
+}
+
 export default function EmbeddingUniverse(props: UniverseProps) {
+  const [webglAvailable] = useState(supportsWebGL2);
+  useEffect(() => props.onVisualizationModeChange?.(webglAvailable ? "3d" : "2d"), [props.onVisualizationModeChange, webglAvailable]);
+  if (!webglAvailable) return <TwoDimensionalEvidenceMap props={props} />;
   return (
     <Canvas
       dpr={[1, 1.5]}
