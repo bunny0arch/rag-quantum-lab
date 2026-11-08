@@ -46,6 +46,10 @@ describe("session RAG service", () => {
     const result = await ingestFiles({ workspaceId: "service-test-multi-format", apiKey: null, files });
     expect(result.snapshot.documents).toHaveLength(formats.length);
     expect(result.snapshot.documents.every(document => document.status === "extracted")).toBe(true);
+    const pdfRuntime = globalThis as typeof globalThis & { DOMMatrix?: unknown; ImageData?: unknown; Path2D?: unknown };
+    expect(typeof pdfRuntime.DOMMatrix).toBe("function");
+    expect(typeof pdfRuntime.ImageData).toBe("function");
+    expect(typeof pdfRuntime.Path2D).toBe("function");
     for (const [extension, , expectedText] of formats) {
       const chunk = result.snapshot.chunks.find(item => item.sourceName === `quantum-sample.${extension}`);
       expect(chunk?.text.toLowerCase()).toContain(expectedText.toLowerCase());

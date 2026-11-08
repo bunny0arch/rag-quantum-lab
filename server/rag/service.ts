@@ -157,6 +157,15 @@ function textFromOfficeArchive(buffer: Buffer, extension: string) {
   return entries.sort((a, b) => a.name.localeCompare(b.name)).map(entry => entry.text).join("\n\n");
 }
 
+async function preparePdfRuntime() {
+  const runtime = globalThis as unknown as Record<string, unknown>;
+  if (runtime.DOMMatrix && runtime.ImageData && runtime.Path2D) return;
+  const canvas = await import("@napi-rs/canvas");
+  runtime.DOMMatrix ||= canvas.DOMMatrix;
+  runtime.ImageData ||= canvas.ImageData;
+  runtime.Path2D ||= canvas.Path2D;
+}
+
 async function extractText(file: IngestFileInput): Promise<{ text: string; location: string }> {
   if (file.size > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MB limit.`);
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.contentBase64) || file.contentBase64.length % 4 === 1) {
@@ -183,6 +192,7 @@ async function extractText(file: IngestFileInput): Promise<{ text: string; locat
   }
 
   if (extension === "pdf") {
+    await preparePdfRuntime();
     const { PDFParse } = await import("pdf-parse");
     const parser = new PDFParse({ data: buffer });
     const result = await parser.getText();
