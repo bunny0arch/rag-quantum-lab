@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ingestFiles, queryWorkspace, removeDocument, snapshotWorkspace, subscribeToProgress } from "./service";
+import { indexExtractedChunks, ingestFiles, queryWorkspace, removeDocument, snapshotWorkspace, subscribeToProgress } from "./service";
 
 const encoded = (content: string) => ({
   name: "capstone-notes.md",
@@ -8,6 +8,32 @@ const encoded = (content: string) => ({
   size: Buffer.byteLength(content),
   contentBase64: Buffer.from(content).toString("base64"),
 });
+
+async function withGeminiMock<T>(run: () => Promise<T>) {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = "test-gemini-key";
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes(":generateContent")) {
+      const body = JSON.parse(String(init?.body || "{}")) as { contents?: Array<{ parts?: Array<{ inlineData?: { mimeType?: string } }> }> };
+      expect(body.contents?.[0]?.parts?.[1]?.inlineData?.mimeType).toBe("image/png");
+      return Response.json({ candidates: [{ content: { parts: [{ text: "Visible label: entangled photons. The diagram shows two linked detectors." }] } }] });
+    }
+    if (url.includes(":batchEmbedContents")) {
+      const body = JSON.parse(String(init?.body || "{}")) as { requests?: unknown[] };
+      return Response.json({ embeddings: (body.requests || []).map(() => ({ values: [0.25, 0.5, 0.75] })) });
+    }
+    return new Response("Unexpected provider endpoint", { status: 500 });
+  };
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalKey;
+  }
+}
 
 describe("session RAG service", () => {
   it("extracts and chunks a real text document without claiming it is indexed", async () => {
@@ -17,6 +43,72 @@ describe("session RAG service", () => {
     expect(result.snapshot.index.status).toBe("extracted");
     expect(result.snapshot.chunks[0]?.text).toContain("Retrieval brings evidence");
     expect(result.snapshot.points).toHaveLength(0);
+  });
+
+  it("embeds every extracted chunk and marks the source indexed after a successful upload", async () => withGeminiMock(async () => {
+    const content = Array.from({ length: 20 }, (_, index) => `Quantum section ${index} describes retrieval, evidence, and measurement.`).join("\n");
+    const result = await ingestFiles({ workspaceId: "service-test-vector-upload", files: [encoded(content)], chunkSize: 160, overlap: 0 });
+    const document = result.snapshot.documents[0]!;
+    expect(document.status).toBe("ready");
+    expect(document.indexedChunkCount).toBe(document.chunkCount);
+    expect(document.chunkCount).toBeGreaterThan(1);
+    expect(result.snapshot.index.status).toBe("ready");
+    expect(result.snapshot.points).toHaveLength(document.chunkCount);
+    expect(result.snapshot.chunks.every(chunk => chunk.embeddingDimension === 3)).toBe(true);
+  }));
+
+  it("re-indexes browser-supplied extracted chunks on a cold instance", async () => withGeminiMock(async () => {
+    const extracted = await ingestFiles({ workspaceId: "service-test-reindex-source", apiKey: null, files: [encoded("A coherent source for deterministic re-indexing.")] });
+    const result = await indexExtractedChunks({ workspaceId: "service-test-reindex-instance", fallbackChunks: extracted.snapshot.chunks, fallbackDocuments: extracted.snapshot.documents });
+    expect(result.snapshot.documents[0]?.status).toBe("ready");
+    expect(result.snapshot.documents[0]?.indexedChunkCount).toBe(1);
+    expect(result.snapshot.index.status).toBe("ready");
+    expect(result.snapshot.points).toHaveLength(1);
+  }));
+
+  it("extracts image text and visual description, then chunks and embeds it", async () => withGeminiMock(async () => {
+    const { createCanvas } = await import("@napi-rs/canvas");
+    const canvas = createCanvas(96, 48);
+    const context = canvas.getContext("2d");
+    context.fillStyle = "white";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "black";
+    context.fillText("Photon map", 8, 24);
+    const bytes = canvas.toBuffer("image/png");
+    const result = await ingestFiles({
+      workspaceId: "service-test-image-upload",
+      files: [{ name: "photon-map.png", mimeType: "image/png", size: bytes.length, contentBase64: bytes.toString("base64") }],
+    });
+    expect(result.snapshot.documents[0]?.status).toBe("ready");
+    expect(result.snapshot.chunks[0]?.location).toContain("image OCR");
+    expect(result.snapshot.chunks[0]?.text).toContain("entangled photons");
+    expect(result.snapshot.points).toHaveLength(1);
+  }));
+
+  it("returns a visible document error when a file cannot be extracted", async () => {
+    const invalid = { name: "broken.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", size: 4, contentBase64: Buffer.from("nope").toString("base64") };
+    const result = await ingestFiles({ workspaceId: "service-test-parser-failure", apiKey: null, files: [invalid] });
+    expect(result.snapshot.documents[0]?.status).toBe("error");
+    expect(result.snapshot.documents[0]?.error).toBeTruthy();
+    expect(result.snapshot.documents[0]?.chunkCount).toBe(0);
+    expect(result.snapshot.chunks).toHaveLength(0);
+  });
+
+  it("keeps chunks and reports the missing provider when vector indexing is attempted without a key", async () => {
+    const originalKey = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      const extracted = await ingestFiles({ workspaceId: "service-test-index-no-key-source", apiKey: null, files: [encoded("Chunk text remains available for a later retry.")] });
+      const result = await indexExtractedChunks({ workspaceId: "service-test-index-no-key-instance", fallbackChunks: extracted.snapshot.chunks, fallbackDocuments: extracted.snapshot.documents });
+      expect(result.snapshot.documents[0]?.status).toBe("extracted");
+      expect(result.snapshot.documents[0]?.error).toContain("GEMINI_API_KEY");
+      expect(result.snapshot.chunks).toHaveLength(1);
+      expect(result.snapshot.index.status).toBe("extracted");
+      expect(result.events.some(item => item.stage === "error")).toBe(true);
+    } finally {
+      if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = originalKey;
+    }
   });
 
   it("accepts unknown extensions when their payload is valid readable text", async () => {

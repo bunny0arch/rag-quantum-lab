@@ -229,11 +229,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, label:has(inp
 
 .managed-key-status { display: flex; align-items: center; gap: 8px; padding: 8px 0 2px; color: var(--sage); font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
 
-/* Metallic instrument chrome and whole-interface pointer response */
+/* Whole-interface pointer response */
 :root { --parallax-x: 0px; --parallax-y: 0px; }
 .floating-topbar, .source-dock, .universe-readout, .floating-method, .floating-query, .evidence-float, .floating-config, .chunk-inspector { translate: var(--parallax-x) var(--parallax-y); transition: translate .35s cubic-bezier(.2,.8,.2,1); }
-.icon-button, .universe-readout__actions button, .floating-index-button, .query-submit, .source-collapsed-button, .floating-query__clear, .floating-error button { color: #111515; border: 1px solid rgba(235, 237, 226, .58); background: linear-gradient(145deg, #eef0e7 0%, #aeb7b0 28%, #f7f4e8 49%, #727d79 72%, #d9ded5 100%); box-shadow: inset 0 1px 0 rgba(255,255,255,.74), inset 0 -1px 0 rgba(20,25,24,.34), 0 5px 18px rgba(0,0,0,.28); text-shadow: 0 1px 0 rgba(255,255,255,.38); transition: transform .18s ease, box-shadow .18s ease, filter .18s ease; }
-.icon-button:hover, .universe-readout__actions button:hover, .floating-index-button:hover, .query-submit:hover, .source-collapsed-button:hover, .floating-query__clear:hover, .floating-error button:hover { filter: brightness(1.12); transform: translateY(-2px) rotateX(2deg); box-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 8px 24px rgba(214,168,94,.18); }.icon-button:active, .universe-readout__actions button:active, .floating-index-button:active, .query-submit:active { transform: translateY(1px) scale(.97); }.query-submit:disabled, .floating-index-button:disabled { filter: grayscale(.8); opacity: .48; transform: none; }
 .live-stage-sequence { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 11px; }.live-stage { position: relative; display: grid; gap: 4px; min-width: 0; color: var(--amber); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; text-transform: uppercase; }.live-stage i { display: block; height: 2px; overflow: hidden; background: rgba(214,168,94,.18); }.live-stage i::after { display: block; width: 35%; height: 100%; background: var(--amber); content: ""; animation: stage-sweep 1.35s ease-in-out infinite; }.live-stage:nth-child(2) i::after { animation-delay: .18s; }.live-stage:nth-child(3) i::after { animation-delay: .36s; }.live-stage:nth-child(4) i::after { animation-delay: .54s; }.live-stage b { overflow: hidden; color: var(--faint); font-size: 7px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; text-transform: none; }
 @keyframes stage-sweep { from { transform: translateX(-120%); } to { transform: translateX(350%); } }
 @media (prefers-reduced-motion: reduce) { .floating-topbar, .source-dock, .universe-readout, .floating-method, .floating-query, .evidence-float, .floating-config, .chunk-inspector { translate: none; transition: none; }.live-stage i::after { animation: none; width: 100%; opacity: .42; } }
@@ -334,3 +332,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, label:has(inp
 .thoughtline-float .thought-line { max-width: min(330px, calc(100vw - 56px)); }
 @media (max-width: 900px) { .thoughtline-float { width: max-content; padding: 0; } }
 @media (max-width: 620px) { .thoughtline-float { left: 12px; width: max-content; padding: 0; } .thoughtline-float .thought-line { max-width: calc(100vw - 24px); } }
+
+/* SpecularButton owns the control surface; its canvas adds only the rim light. */
+button.specular-button { color: var(--ink); border: 1px solid rgba(205, 215, 210, .2); background: rgba(13, 17, 16, .92); box-shadow: inset 0 1px rgba(255,255,255,.045), 0 8px 22px rgba(0,0,0,.24); text-shadow: none; transition: transform .16s ease, border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+button.specular-button .specular-button__light { z-index: 0; }
+button.specular-button .specular-button__label { z-index: 1; }
+button.specular-button:hover:not(:disabled) { transform: translateY(-1px); border-color: rgba(214,168,94,.48); background: rgba(22,25,22,.98); box-shadow: inset 0 1px rgba(255,255,255,.07), 0 10px 25px rgba(0,0,0,.3); }
+button.specular-button:active:not(:disabled) { transform: translateY(0) scale(.98); }
+button.specular-button:disabled { filter: none; opacity: .48; transform: none; }
+button.specular-button.icon-button, button.specular-button.universe-control { color: var(--ink); }
+button.specular-button.floating-index-button { color: var(--amber); border-color: rgba(214,168,94,.34); background: rgba(25,21,15,.94); }
+button.specular-button.floating-index-button:hover:not(:disabled) { background: rgba(42,33,20,.98); }
+button.specular-button.query-submit { color: #17120b; border-color: rgba(255,229,185,.62); background: linear-gradient(135deg,#e8bd76,#d6a85e 62%,#bd8b43); box-shadow: inset 0 1px rgba(255,255,255,.42), 0 7px 18px rgba(0,0,0,.23); }
+button.specular-button.query-submit:hover:not(:disabled) { background: linear-gradient(135deg,#f0cc8c,#e0b66d 62%,#cb9850); }
+button.specular-button.source-collapsed-button { color: var(--muted); }
+button.specular-button.show-evidence { color: var(--muted); border-color: rgba(205,215,210,.18); background: rgba(13,17,16,.86); }
+button.specular-button.show-evidence:hover:not(:disabled) { color: var(--ink); }
+.supported-formats { color: var(--faint); font: 7px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; text-transform: uppercase; }
+.floating-source-row { align-items: flex-start; }
+.source-file-icon { display: inline-flex; flex: 0 0 auto; margin-top: 2px; color: var(--muted); }
+.source-file-icon--image { color: #c7b5dc; }
+.source-file-icon--pdf { color: #e49c83; }
+.source-file-icon--presentation { color: #e7b77e; }
+.source-file-icon--spreadsheet { color: #a5c69d; }
+.source-file-icon--document, .source-file-icon--text { color: #a8c6d6; }
+.source-file-icon--code { color: #c9c58e; }
+.floating-source-row .source-state { margin-top: 6px; }
+.floating-source-row .source-error { display: -webkit-box; max-height: 2.7em; overflow: hidden; color: var(--error); white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }

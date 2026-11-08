@@ -18,6 +18,10 @@ export const appRouter = router({
     }),
   }),
   rag: router({
+    providerStatus: publicProcedure.query(() => ({
+      embeddingsConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
+      generationConfigured: Boolean(process.env.OPENROUTER_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim()),
+    })),
     snapshot: publicProcedure.input(z.object({ workspaceId })).query(({ input }) => snapshotWorkspace(input.workspaceId)),
     ingest: publicProcedure.input(z.object({
       workspaceId,
