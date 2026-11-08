@@ -1,7 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { jsPDF } from "jspdf";
-import { AlertCircle, Archive, ArrowDown, Check, ChevronDown, Clipboard, Database, Download, FileText, Gauge, KeyRound, Layers3, Loader2, Orbit, RefreshCw, Search, Settings2, SlidersHorizontal, Trash2, UploadCloud, X } from "lucide-react";
+import { AlertCircle, Archive, ArrowDown, ChevronDown, Clipboard, Database, Download, FileText, Gauge, KeyRound, Layers3, Loader2, Orbit, RefreshCw, Search, Settings2, SlidersHorizontal, Trash2, UploadCloud, X } from "lucide-react";
 import { AdaptiveNav } from "@/components/ui/AdaptiveNav";
+import SlideCommit from "@/components/SlideCommit";
+import SpecularButton from "@/components/SpecularButton";
+import ThoughtLine from "@/components/ThoughtLine";
 import { trpc } from "@/lib/trpc";
 import type { DocumentRecord, ProjectedPoint, QueryRecord, WorkspaceSnapshot } from "@shared/types";
 
@@ -137,6 +140,7 @@ export default function Home() {
   const indexMutation = trpc.rag.indexExtracted.useMutation({ onMutate: () => { setLastEvent("Re-index accepted; streaming embedding progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(previous => previous ? { ...result.snapshot, documents: previous.documents, chunks: previous.chunks, points: previous.points, index: previous.index, queries: [result.query, ...previous.queries.filter(queryRecord => queryRecord.id !== result.query.id)].slice(0, 100) } : result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const removeMutation = trpc.rag.removeDocument.useMutation({ onSuccess: result => { setSnapshot(result); setSelectedChunkId(undefined); } });
+  const resetMutation = trpc.rag.resetWorkspace.useMutation({ onSuccess: result => { setSnapshot(result); setActiveQueryId(undefined); setSelectedChunkId(undefined); setEvidenceOpen(false); setLastEvent("Workspace reset; source field cleared"); setLocalError(""); }, onError: error => setLocalError(error.message) });
 
   useEffect(() => { if (snapshotQuery.data && !snapshot) setSnapshot(snapshotQuery.data); }, [snapshot, snapshotQuery.data]);
 
@@ -157,7 +161,6 @@ export default function Home() {
   const extractedDocuments = current?.documents.filter(document => document.status === "extracted").length || 0;
   const readyDocuments = current?.documents.filter(document => document.status === "ready").length || 0;
   const isBusy = ingestMutation.isPending || indexMutation.isPending || queryMutation.isPending;
-  const operation = queryMutation.isPending ? "query" : (ingestMutation.isPending || indexMutation.isPending) ? "ingest" : activeQuery ? "answer" : indexedCount ? "ready" : current?.chunks.length ? "extracted" : "idle";
   const currentTone = localError ? "error" : isBusy ? "warn" : indexedCount ? "ready" : current?.chunks.length ? "warn" : "neutral";
   const ingestFiles = useCallback(async (files: File[]) => {
     if (!files.length) return;
@@ -175,6 +178,10 @@ export default function Home() {
       fallbackDocuments: current?.documents || [],
       fallbackPoints: (current?.points || []).slice(0, 100),
     });
+  };
+
+  const resetWorkspace = async () => {
+    await resetMutation.mutateAsync({ workspaceId });
   };
 
   const copy = async (content: string) => {
@@ -195,8 +202,6 @@ export default function Home() {
   };
 
   const onDrop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); void ingestFiles(Array.from(event.dataTransfer.files)); };
-  const stageDone = (key: typeof stages[number]["key"]) => key === "extract" || key === "chunk" ? Boolean(current?.chunks.length) : key === "embed" || key === "index" ? indexedCount > 0 : key === "retrieve" ? Boolean(activeQuery) : Boolean(activeQuery?.answer);
-  const stageActive = (key: typeof stages[number]["key"]) => (isBusy && ((operation === "query" && (key === "retrieve" || key === "answer")) || (operation === "ingest" && (key === "embed" || key === "index")))) || (operation === "answer" && key === "answer");
 
   return (
     <div className="lab-shell lab-shell--immersive" onPointerMove={handlePointerMove}>
@@ -209,21 +214,22 @@ export default function Home() {
       <header className="floating-topbar">
         <div className="brand-lockup"><div className="brand-mark"><span /><span /></div><div><div className="brand-name">RAG QUANTUM LAB</div><div className="brand-subtitle">retrieval observatory / live session</div></div></div>
         <AdaptiveNav activeId={activeNav} />
-        <div className="topbar-status"><StatusDot tone={currentTone} /><span>{isBusy ? "PROCESSING" : indexedCount ? "INDEX READY" : current?.chunks.length ? "EXTRACTED" : "AWAITING SOURCE"}</span><button className="icon-button" onClick={() => setSettingsOpen(value => !value)} aria-label="Open session configuration"><Settings2 size={15} /></button></div>
+        <div className="topbar-status"><StatusDot tone={currentTone} /><span>{isBusy ? "PROCESSING" : indexedCount ? "INDEX READY" : current?.chunks.length ? "EXTRACTED" : "AWAITING SOURCE"}</span><SpecularButton size="sm" className="icon-button specular-icon-button" onClick={() => setSettingsOpen(value => !value)} aria-label="Open session configuration"><Settings2 size={15} /></SpecularButton></div>
       </header>
 
       <main className="immersive-ui">
         <section id="sources" className={`source-dock ${sourceDockOpen ? "is-open" : "is-collapsed"}`} aria-label="Floating source register">
-          <div className="dock-kicker"><span>01 / SOURCES</span><button onClick={() => setSourceDockOpen(value => !value)} aria-label={sourceDockOpen ? "Collapse sources" : "Expand sources"}>{sourceDockOpen ? <ChevronDown size={14} /> : <Archive size={14} />}</button></div>
+          <div className="dock-kicker"><span>01 / SOURCES</span><SpecularButton size="sm" className="icon-button specular-icon-button" onClick={() => setSourceDockOpen(value => !value)} aria-label={sourceDockOpen ? "Collapse sources" : "Expand sources"}>{sourceDockOpen ? <ChevronDown size={14} /> : <Archive size={14} />}</SpecularButton></div>
           {sourceDockOpen ? <>
             <div className="floating-drop-zone" onDragOver={event => event.preventDefault()} onDrop={onDrop}><UploadCloud size={18} strokeWidth={1.4} /><strong>Drop source</strong><span>or <label htmlFor="file-input">select files</label></span><input id="file-input" type="file" multiple hidden accept="*/*" onChange={event => { void ingestFiles(Array.from(event.target.files || [])); event.target.value = ""; }} /></div>
             <div className="source-dock__meta"><span>{current?.documents.length || 0} source{current?.documents.length === 1 ? "" : "s"}</span><span className="mono">{indexedCount} vectors</span></div>
             {current?.documents.length ? <div className="floating-source-list">{current.documents.map(document => <article className="floating-source-row" key={document.id}><span className={`source-state source-state--${document.status}`} /> <div><strong title={document.name}>{document.name}</strong><small>{stageText(document.stage)} · {document.chunkCount || "—"} chunks</small></div><button onClick={() => removeMutation.mutate({ workspaceId, documentId: document.id })} aria-label={`Remove ${document.name}`}><Trash2 size={12} /></button></article>)}</div> : <div className="source-empty"><Archive size={15} /><span>Sources become chunks, then vectors.</span></div>}
-            {extractedDocuments > 0 && <button className="floating-index-button" disabled={indexMutation.isPending} onClick={() => indexMutation.mutate({ workspaceId, embeddingModel, fallbackChunks: (current?.chunks || []).slice(0, 2000), fallbackDocuments: current?.documents || [] })}>{indexMutation.isPending ? <Loader2 size={12} className="spin" /> : <Database size={12} />} index {extractedDocuments} extracted</button>}
-          </> : <button className="source-collapsed-button" onClick={() => setSourceDockOpen(true)}><span className="source-count">{current?.documents.length || 0}</span><span>source register</span></button>}
+            {extractedDocuments > 0 && <SpecularButton size="sm" className="floating-index-button" disabled={indexMutation.isPending} onClick={() => indexMutation.mutate({ workspaceId, embeddingModel, fallbackChunks: (current?.chunks || []).slice(0, 2000), fallbackDocuments: current?.documents || [] })}>{indexMutation.isPending ? <Loader2 size={12} className="spin" /> : <Database size={12} />} index {extractedDocuments} extracted</SpecularButton>}
+            {current?.documents.length ? <SlideCommit label="Slide to clear sources" doneLabel="Cleared" errorLabel="Reset failed" width={220} height={38} radius={19} holdMs={900} disabled={resetMutation.isPending} onConfirm={resetWorkspace} /> : null}
+          </> : <SpecularButton size="sm" className="source-collapsed-button" onClick={() => setSourceDockOpen(true)}><span className="source-count">{current?.documents.length || 0}</span><span>source register</span></SpecularButton>}
         </section>
 
-        <section id="universe" className="universe-readout" aria-label="Embedding universe readout"><span className="eyebrow">02 / VECTOR SPACE</span><strong>{indexedCount ? `${indexedCount} indexed point${indexedCount === 1 ? "" : "s"}` : "Awaiting indexed vectors"}</strong><span>{visualizationMode === "2d" ? "2D PCA-style projection · vector index remains high-dimensional" : "PCA-style projection · vector index remains high-dimensional"}</span><div className="universe-readout__actions"><button onClick={() => setResetToken(value => value + 1)} title="Reset camera"><RefreshCw size={13} /></button><button onClick={() => setFitToken(value => value + 1)} disabled={!indexedCount} title="Fit all points"><Orbit size={13} /></button></div></section>
+        <section id="universe" className="universe-readout" aria-label="Embedding universe readout"><span className="eyebrow">02 / VECTOR SPACE</span><strong>{indexedCount ? `${indexedCount} indexed point${indexedCount === 1 ? "" : "s"}` : "Awaiting indexed vectors"}</strong><span>{visualizationMode === "2d" ? "2D PCA-style projection · vector index remains high-dimensional" : "PCA-style projection · vector index remains high-dimensional"}</span><div className="universe-readout__actions"><SpecularButton size="sm" className="universe-control" onClick={() => setResetToken(value => value + 1)} title="Reset camera"><RefreshCw size={13} /></SpecularButton><SpecularButton size="sm" className="universe-control" onClick={() => setFitToken(value => value + 1)} disabled={!indexedCount} title="Fit all points"><Orbit size={13} /></SpecularButton></div></section>
 
         <section className="floating-method" aria-label="Visualization method"><span className="mono">METHOD</span><span>HIGH-DIMENSIONAL EMBEDDINGS</span><span className="method-separator">→</span><span>{visualizationMode === "2d" ? "2D PCA-STYLE MAP" : "3D PCA-STYLE VIEW"}</span></section>
 
@@ -251,9 +257,9 @@ export default function Home() {
           </>}
         </section>
 
-        <section id="method" className="pipeline-float" aria-label="RAG pipeline state"><div className="pipeline-float__head"><span className="eyebrow">LIVE PIPELINE</span><span className={`pipeline-operation ${isBusy ? "is-running" : ""}`}>{isBusy ? "awaiting server event" : lastEvent || "idle / no event"}</span></div><div className="pipeline-track">{stages.map((stage, index) => <div className={`pipeline-node ${stageDone(stage.key) ? "is-done" : ""} ${stageActive(stage.key) ? "is-running" : ""}`} key={stage.key}><span className="pipeline-node__marker">{stageDone(stage.key) ? <Check size={10} /> : String(index + 1).padStart(2, "0")}</span><span>{stage.label}</span>{index < stages.length - 1 && <i />}</div>)}</div></section>
+        <section id="method" className="pipeline-float thoughtline-float" aria-label="RAG pipeline state"><ThoughtLine label={isBusy ? lastEvent || "Processing evidence…" : activeQuery ? "Evidence field settled" : "Awaiting source"} doneLabel={lastEvent || "Pipeline idle"} steps={stages.map(stage => stage.label)} working={isBusy} collapsible collapseOnSettle color="var(--muted)" glyphColor="var(--amber)" fontSize={10} showTimer /></section>
 
-        <section className="floating-query" aria-label="Query composer"><div className="floating-query__context"><span className="eyebrow">ASK THE INDEX</span><span className="mono">{indexedCount ? `${indexedCount} vectors available` : "no indexed vectors"}</span></div><div className="floating-query__input"><Search size={16} /><textarea value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey || event.altKey) && event.key === "Enter") handleQuery(); }} placeholder="Trace a question through the evidence field…" rows={1} /><button className="query-submit" onClick={handleQuery} disabled={queryMutation.isPending || !question.trim()}>{queryMutation.isPending ? <Loader2 size={15} className="spin" /> : <ArrowDown size={15} />} <span>retrieve</span></button></div><div className="floating-query__footer"><span className="mono">⌘↵ RUN QUERY</span><label><SlidersHorizontal size={12} /> top-k <input type="number" min={1} max={10} value={topK} onChange={event => setTopK(Number(event.target.value) || 1)} /></label>{activeQuery && !evidenceOpen && <button className="show-evidence" onClick={() => setEvidenceOpen(true)}>open evidence <ChevronDown size={12} /></button>}</div></section>
+        <section className="floating-query" aria-label="Query composer"><div className="floating-query__context"><span className="eyebrow">ASK THE INDEX</span><span className="mono">{indexedCount ? `${indexedCount} vectors available` : "no indexed vectors"}</span></div><div className="floating-query__input"><Search size={16} /><textarea value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if ((event.metaKey || event.ctrlKey || event.altKey) && event.key === "Enter") handleQuery(); }} placeholder="Trace a question through the evidence field…" rows={1} /><SpecularButton size="sm" className="query-submit" onClick={handleQuery} disabled={queryMutation.isPending || !question.trim()}>{queryMutation.isPending ? <Loader2 size={15} className="spin" /> : <ArrowDown size={15} />} <span>retrieve</span></SpecularButton></div><div className="floating-query__footer"><span className="mono">⌘↵ RUN QUERY</span><label><SlidersHorizontal size={12} /> top-k <input type="number" min={1} max={10} value={topK} onChange={event => setTopK(Number(event.target.value) || 1)} /></label>{activeQuery && !evidenceOpen && <SpecularButton size="sm" className="show-evidence" onClick={() => setEvidenceOpen(true)}>open evidence <ChevronDown size={12} /></SpecularButton>}</div></section>
       </main>
 
       <footer className="floating-footer"><span>RAG QUANTUM LAB / evidence before assertion</span><span><Database size={12} /> {readyDocuments} ready sources · {indexedCount} indexed chunks · session memory</span></footer>

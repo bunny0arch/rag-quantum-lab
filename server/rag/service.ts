@@ -720,3 +720,9 @@ export function removeDocument(workspaceId: string, documentId: string) {
   indexed.forEach(chunk => { chunk.projection = applyPca(chunk.embedding!, workspace.projection!); });
   return toSnapshot(workspaceId, workspace);
 }
+
+export function resetWorkspace(workspaceId: string) {
+  workspaces.delete(workspaceId);
+  progressListeners.delete(workspaceId);
+  return toSnapshot(workspaceId, { documents: [], chunks: [], queries: [] });
+}

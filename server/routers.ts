@@ -3,7 +3,7 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
-import { indexExtractedChunks, ingestFiles, queryWorkspace, removeDocument, snapshotWorkspace } from "./rag/service";
+import { indexExtractedChunks, ingestFiles, queryWorkspace, removeDocument, resetWorkspace, snapshotWorkspace } from "./rag/service";
 
 const workspaceId = z.string().min(8).max(80);
 
@@ -69,6 +69,7 @@ export const appRouter = router({
       })).max(1000).optional(),
     })).mutation(({ input }) => indexExtractedChunks(input)),
     removeDocument: publicProcedure.input(z.object({ workspaceId, documentId: z.string().min(1).max(80) })).mutation(({ input }) => removeDocument(input.workspaceId, input.documentId)),
+    resetWorkspace: publicProcedure.input(z.object({ workspaceId })).mutation(({ input }) => resetWorkspace(input.workspaceId)),
   }),
 });
 

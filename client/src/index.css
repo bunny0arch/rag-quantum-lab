@@ -322,3 +322,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, label:has(inp
 .floating-result { min-width: 0; grid-template-columns: 22px minmax(0, 1fr) auto; }
 .floating-result > span:nth-child(2) { min-width: 0; }
 .floating-result__rank, .floating-result b { min-width: 0; }
+
+/* React Bits integration sizing; component source remains generated and untouched. */
+.specular-button.icon-button.specular-icon-button { width: 28px; height: 25px; padding: 0; border-radius: 4px; }
+.specular-button.floating-index-button { width: 100%; min-height: 30px; padding: 7px 8px; border-radius: 3px; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .09em; text-transform: uppercase; }
+.specular-button.source-collapsed-button { width: 100%; justify-content: flex-start; padding: 7px 8px; border-radius: 3px; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; }
+.specular-button.universe-control { width: 28px; height: 25px; padding: 0; border-radius: 4px; }
+.specular-button.query-submit { flex: 0 0 auto; min-height: 31px; padding: 8px 12px; border-radius: 3px; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; }
+.specular-button.show-evidence { margin-left: 10px; padding: 4px 7px; border-radius: 3px; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; text-transform: uppercase; }
+.thoughtline-float { width: max-content; min-width: 170px; padding: 0; border: 0; background: transparent; box-shadow: none; backdrop-filter: none; }
+.thoughtline-float .thought-line { max-width: min(330px, calc(100vw - 56px)); }
+@media (max-width: 900px) { .thoughtline-float { width: max-content; padding: 0; } }
+@media (max-width: 620px) { .thoughtline-float { left: 12px; width: max-content; padding: 0; } .thoughtline-float .thought-line { max-width: calc(100vw - 24px); } }
