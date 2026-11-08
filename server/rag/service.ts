@@ -388,7 +388,18 @@ function applyPca(vector: number[], model: PcaModel): [number, number, number] {
   const scale = Math.max(1, ...raw.map(value => Math.abs(value)));
   return [raw[0] / scale, raw[1] / scale, raw[2] / scale];
 }
-
+function fallbackQueryProjection(results: RetrievalCandidate[], points: ProjectedPoint[]): [number, number, number] | undefined {
+  const matches = results
+    .map(result => ({ point: points.find(point => point.chunkId === result.id), score: Math.max(result.score, 0.01) }))
+    .filter((item): item is { point: ProjectedPoint; score: number } => Boolean(item.point));
+  if (!matches.length) return undefined;
+  const total = matches.reduce((sum, item) => sum + item.score, 0);
+  return [
+    matches.reduce((sum, item) => sum + item.point.x * item.score, 0) / total,
+    matches.reduce((sum, item) => sum + item.point.y * item.score, 0) / total,
+    matches.reduce((sum, item) => sum + item.point.z * item.score, 0) / total,
+  ];
+}
 function toSnapshot(workspaceId: string, workspace: Workspace): WorkspaceSnapshot {
   const indexed = workspace.chunks.filter(chunk => chunk.embedding);
   const dimensions = indexed[0]?.embedding?.length;
@@ -595,30 +606,37 @@ export async function queryWorkspace(input: {
   const results: RetrievalCandidate[] = ranked.map(({ embedding, projection, ...result }) => result);
   const retrievalMs = Date.now() - retrievalStarted;
   const generationStarted = Date.now();
+  const relevanceThreshold = results[0]?.metric === "keyword_overlap" ? 0.15 : 0.45;
+  const hasRelevantEvidence = Boolean(results.length && results[0].score >= relevanceThreshold);
+  const groundedResults = hasRelevantEvidence ? results : [];
   let answer = "";
   let answerMode: QueryRecord["answerMode"] = "generated";
-  let status: QueryRecord["status"] = "complete";
-  try {
+  let status: QueryRecord["status"] = hasRelevantEvidence ? "complete" : "insufficient";
+  if (!hasRelevantEvidence) {
+    answer = "The indexed evidence is insufficient to answer this reliably. No relevant information was found in the uploaded documents.";
+  } else try {
     const requested = cleanModelName(input.generationModel, "gemini-3.1-flash-lite");
     if (requested.startsWith("gemini-") && process.env.GEMINI_API_KEY?.trim()) {
-      answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), requested, question, results);
+      answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), requested, question, groundedResults);
     } else {
       const openRouterKey = configuredOpenRouterKey();
-      if (openRouterKey) answer = await openRouterGenerate(openRouterKey, requested, question, results);
-      else if (process.env.GEMINI_API_KEY?.trim()) answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), "gemini-3.1-flash-lite", question, results);
+      if (openRouterKey) answer = await openRouterGenerate(openRouterKey, requested, question, groundedResults);
+      else if (process.env.GEMINI_API_KEY?.trim()) answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), "gemini-3.1-flash-lite", question, groundedResults);
       else throw new Error("No generation provider configured");
     }
   } catch {
     answerMode = "source_excerpts";
-    answer = results.length
-      ? `AI synthesis is temporarily unavailable. These are source excerpts, not a generated answer:\n\n${results.slice(0, 3).map(result => `[${result.id}] ${result.text.slice(0, 900)}`).join("\n\n")}`
+    answer = groundedResults.length
+      ? `AI synthesis is temporarily unavailable. These are source excerpts, not a generated answer:\n\n${groundedResults.slice(0, 3).map(result => `[${result.id}] ${result.text.slice(0, 900)}`).join("\n\n")}`
       : "The indexed evidence is insufficient to answer this reliably. No chunks matched the query terms.";
   }
-  if (!results.length || results[0].score < (results[0]?.metric === "keyword_overlap" ? 0.15 : 0.2)) status = "insufficient";
-  const citations: Citation[] = results.map(result => ({ chunkId: result.id, sourceName: result.sourceName, location: result.location, quote: result.text.slice(0, 220) }));
+  const citations: Citation[] = groundedResults.map(result => ({ chunkId: result.id, sourceName: result.sourceName, location: result.location, quote: result.text.slice(0, 220) }));
+  const queryProjection = queryEmbedding && workspace.projection
+    ? applyPca(queryEmbedding, workspace.projection)
+    : fallbackQueryProjection(groundedResults, workspace.fallbackPoints || []);
   const query: QueryRecord = {
-    id: nanoid(10), question, createdAt: now(), status, answer, answerMode, citations, results,
-    queryProjection: queryEmbedding && workspace.projection ? applyPca(queryEmbedding, workspace.projection) : undefined,
+    id: nanoid(10), question, createdAt: now(), status, answer, answerMode, citations, results: groundedResults,
+    queryProjection,
     timings: { queryEmbeddingMs, retrievalMs, generationMs: Date.now() - generationStarted, totalMs: Date.now() - started },
   };
   workspace.queries.unshift(query);

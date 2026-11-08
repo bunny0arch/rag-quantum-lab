@@ -72,8 +72,31 @@ describe("session RAG service", () => {
       expect(result.query.results[0]?.text).toContain("Vector indexing");
       expect(result.query.results[0]?.metric).toBe("keyword_overlap");
       expect(result.query.citations.length).toBeGreaterThan(0);
+      expect(result.query.queryProjection).toEqual([0.2, -0.1, 0.3]);
       expect(result.snapshot.documents[0]?.name).toBe("capstone-notes.md");
       expect(result.snapshot.points).toEqual([point]);
+    } finally {
+      if (geminiKey !== undefined) process.env.GEMINI_API_KEY = geminiKey;
+      else delete process.env.GEMINI_API_KEY;
+      if (routerKey !== undefined) process.env.OPENROUTER_API_KEY = routerKey;
+      else delete process.env.OPENROUTER_API_KEY;
+    }
+  });
+
+  it("refuses to generate when no indexed evidence is relevant to the question", async () => {
+    const workspaceId = "service-test-irrelevant-query";
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const routerKey = process.env.OPENROUTER_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    try {
+      const uploaded = await ingestFiles({ workspaceId: `${workspaceId}-upload`, apiKey: null, files: [encoded("Quantum retrieval uses chunk vectors and evidence lookup.")] });
+      const point = { chunkId: uploaded.snapshot.chunks[0]!.id, documentId: uploaded.snapshot.chunks[0]!.documentId, sourceName: "capstone-notes.md", location: "test", excerpt: "Quantum retrieval uses chunk vectors", x: 0.2, y: -0.1, z: 0.3 };
+      const result = await queryWorkspace({ workspaceId, question: "What is the capital of France?", topK: 3, fallbackChunks: uploaded.snapshot.chunks, fallbackDocuments: uploaded.snapshot.documents, fallbackPoints: [point] });
+      expect(result.query.status).toBe("insufficient");
+      expect(result.query.answer).toContain("insufficient");
+      expect(result.query.results).toHaveLength(0);
+      expect(result.query.citations).toHaveLength(0);
     } finally {
       if (geminiKey !== undefined) process.env.GEMINI_API_KEY = geminiKey;
       else delete process.env.GEMINI_API_KEY;

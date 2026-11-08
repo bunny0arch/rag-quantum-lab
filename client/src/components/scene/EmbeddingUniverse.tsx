@@ -90,6 +90,30 @@ function WaveBackdrop({ reducedMotion }: { reducedMotion: boolean }) {
   );
 }
 
+function QueryMarker({ position }: { position: [number, number, number] }) {
+  const markerRef = useRef<THREE.Group>(null);
+  const { camera } = useThree();
+  useFrame(() => {
+    if (markerRef.current) markerRef.current.quaternion.copy(camera.quaternion);
+  });
+  return (
+    <group ref={markerRef} position={position} renderOrder={20}>
+      <mesh>
+        <sphereGeometry args={[0.17, 20, 20]} />
+        <meshBasicMaterial color="#fff8e9" depthTest={false} depthWrite={false} />
+      </mesh>
+      <mesh>
+        <ringGeometry args={[0.28, 0.34, 48]} />
+        <meshBasicMaterial color="#ffd477" transparent opacity={0.95} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+      </mesh>
+      <mesh scale={1.35}>
+        <ringGeometry args={[0.28, 0.3, 48]} />
+        <meshBasicMaterial color="#f0b95f" transparent opacity={0.3} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
 function SceneContents({ props }: { props: UniverseProps }) {
   const controlsRef = useRef<any>(null);
   const parallaxRef = useRef<THREE.Group>(null);
@@ -155,19 +179,8 @@ function SceneContents({ props }: { props: UniverseProps }) {
           );
         })}
       </group>
-      {props.queryProjection && (
-        <>
-          <mesh position={[props.queryProjection[0] * 2.8, props.queryProjection[1] * 2.2, props.queryProjection[2] * 2.8]}>
-            <sphereGeometry args={[0.14, 16, 16]} />
-            <meshBasicMaterial color="#fff8e9" />
-          </mesh>
-          <mesh position={[props.queryProjection[0] * 2.8, props.queryProjection[1] * 2.2, props.queryProjection[2] * 2.8]}>
-            <ringGeometry args={[0.25, 0.29, 32]} />
-            <meshBasicMaterial color="#d6a85e" transparent opacity={0.75} side={THREE.DoubleSide} />
-          </mesh>
-        </>
-      )}
-      {queryPosition && retrievedPoints.map(point => <Line key={`link-${point.chunkId}`} points={[queryPosition, [point.x * 2.8, point.y * 2.2, point.z * 2.8]]} color="#f0b95f" lineWidth={0.9} transparent opacity={0.62} />)}
+      {queryPosition && <QueryMarker position={queryPosition} />}
+      {queryPosition && retrievedPoints.map(point => <Line key={`link-${point.chunkId}`} points={[queryPosition, [point.x * 2.8, point.y * 2.2, point.z * 2.8]]} color="#ffd477" lineWidth={1.4} transparent opacity={0.9} depthTest={false} renderOrder={15} />)}
       </group>
       <OrbitControls ref={controlsRef} enableDamping dampingFactor={0.08} minDistance={3.2} maxDistance={10.5} makeDefault />
     </>
