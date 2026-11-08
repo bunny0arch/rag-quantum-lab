@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ingestFiles, removeDocument, snapshotWorkspace, subscribeToProgress } from "./service";
+import { ingestFiles, queryWorkspace, removeDocument, snapshotWorkspace, subscribeToProgress } from "./service";
 
 const encoded = (content: string) => ({
   name: "capstone-notes.md",
@@ -18,12 +18,30 @@ describe("session RAG service", () => {
     expect(result.snapshot.points).toHaveLength(0);
   });
 
-  it("keeps unsupported files as explicit errors", async () => {
+  it("accepts unknown extensions when their payload is valid readable text", async () => {
     const workspaceId = "service-test-unsupported";
     const file = { name: "archive.bin", mimeType: "application/octet-stream", size: 3, contentBase64: Buffer.from("raw").toString("base64") };
     const result = await ingestFiles({ workspaceId, apiKey: null, files: [file] });
-    expect(result.snapshot.documents[0]?.status).toBe("error");
-    expect(result.snapshot.documents[0]?.error).toContain("Unsupported format");
+    expect(result.snapshot.documents[0]?.status).toBe("extracted");
+    expect(result.snapshot.chunks[0]?.text).toBe("raw");
+  });
+
+  it("answers from existing chunks without depending on embedding or generation providers", async () => {
+    const workspaceId = "service-test-local-query";
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const routerKey = process.env.OPENROUTER_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    await ingestFiles({ workspaceId, apiKey: null, files: [encoded("Quantum retrieval uses chunk vectors. Vector indexing supports evidence lookup.")] });
+    try {
+      const result = await queryWorkspace({ workspaceId, question: "How does vector indexing support retrieval?", topK: 3 });
+      expect(result.query.answer).toContain("indexed excerpts");
+      expect(result.query.results[0]?.text).toContain("Vector indexing");
+      expect(result.query.citations.length).toBeGreaterThan(0);
+    } finally {
+      if (geminiKey) process.env.GEMINI_API_KEY = geminiKey;
+      if (routerKey) process.env.OPENROUTER_API_KEY = routerKey;
+    }
   });
 
   it("does not duplicate the same filename and byte size in a session", async () => {

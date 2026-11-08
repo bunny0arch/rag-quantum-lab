@@ -90,8 +90,8 @@ async function extractText(file: IngestFileInput): Promise<{ text: string; locat
   if (buffer.length > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MB limit.`);
   const extension = extensionOf(file.name);
 
-  if (["txt", "md", "markdown", "csv", "json", "html", "htm", "xml", "js", "jsx", "ts", "tsx", "py", "java", "go", "rs", "css", "scss", "yml", "yaml", "sql", "env"].includes(extension)) {
-    return { text: normalizeText(buffer.toString("utf8")), location: "document" };
+  if (["txt", "md", "markdown", "csv", "json", "html", "htm", "xml", "js", "jsx", "ts", "tsx", "py", "java", "go", "rs", "css", "scss", "yml", "yaml", "sql", "env", "log", "rst", "tex", "toml", "ini", "cfg", "conf", "sh", "bash", "c", "h", "cpp", "hpp", "rb", "php", "swift", "kt", "dart", "vue", "svelte", "graphql", "proto", "diff", "patch", "ps1", "bat", "properties", "makefile", "dockerfile"].includes(extension)) {
+    return { text: normalizeText(new TextDecoder("utf-8", { fatal: false }).decode(buffer)), location: "document" };
   }
 
   if (extension === "pdf") {
@@ -118,7 +118,10 @@ async function extractText(file: IngestFileInput): Promise<{ text: string; locat
     return { text: normalizeText(sheets.join("\n\n")), location: "workbook sheets" };
   }
 
-  throw new Error(`Unsupported format .${extension || "unknown"}. Supported in this build: TXT, Markdown, CSV, JSON, HTML, XML, source/config files, PDF text layers, DOCX, XLSX.`);
+  const decoded = new TextDecoder("utf-8", { fatal: false }).decode(buffer);
+  const printable = [...decoded].filter(character => character === "\n" || character === "\r" || character === "\t" || character >= " ").length;
+  if (decoded.length && printable / decoded.length > 0.92 && !decoded.includes("\uFFFD")) return { text: normalizeText(decoded), location: "text content" };
+  throw new Error(`Unsupported or binary format .${extension || "unknown"}. This file is not a recognized text, PDF, DOCX, or spreadsheet format.`);
 }
 
 function chunkText(text: string, documentId: string, sourceName: string, location: string, size = DEFAULT_CHUNK_SIZE, overlap = DEFAULT_OVERLAP): InternalChunk[] {
@@ -386,29 +389,30 @@ export async function ingestFiles(input: {
       if (!chunks.length) throw new Error("The extracted document produced no non-empty chunks.");
       document.chunkCount = chunks.length;
       events.push(event(input.workspaceId, operationId, documentId, "chunking", `Created ${chunks.length} deterministic chunks`, { current: chunks.length, total: chunks.length }));
+      workspace.chunks.push(...chunks);
       if (apiKey) {
         document.stage = "embedding";
         events.push(event(input.workspaceId, operationId, documentId, "embedding", `Embedding 0/${chunks.length} chunks with ${embeddingModel}`, { current: 0, total: chunks.length }));
         const started = Date.now();
         const batchSize = 32;
+        const embedded: number[][] = [];
         for (let start = 0; start < chunks.length; start += batchSize) {
           const batch = chunks.slice(start, start + batchSize);
           const vectors = await geminiEmbedBatch(apiKey, embeddingModel, batch.map(chunk => chunk.text), "RETRIEVAL_DOCUMENT");
-          vectors.forEach((vector, offset) => { batch[offset].embedding = vector; });
+          embedded.push(...vectors);
           const completed = start + batch.length;
           events.push(event(input.workspaceId, operationId, documentId, "embedding", `Embedded chunks ${start + 1}-${completed}/${chunks.length}`, { current: completed, total: chunks.length }));
         }
         const existingDimension = workspace.chunks.find(chunk => chunk.embedding)?.embedding?.length;
-        const nextDimension = chunks[0]?.embedding?.length;
+        const nextDimension = embedded[0]?.length;
         if (existingDimension && nextDimension && existingDimension !== nextDimension) {
           throw new Error(`Embedding dimension mismatch: index uses ${existingDimension} dimensions but this model returned ${nextDimension}.`);
         }
-        workspace.chunks.push(...chunks);
+        embedded.forEach((vector, index) => { chunks[index].embedding = vector; });
         document.indexedChunkCount = chunks.length;
         document.stage = "indexing";
         events.push(event(input.workspaceId, operationId, documentId, "indexing", `Indexed ${chunks.length} real vectors in ${Date.now() - started} ms`, { current: chunks.length, total: chunks.length }));
       } else {
-        workspace.chunks.push(...chunks);
         document.stage = "ready";
         document.status = "extracted";
         events.push(event(input.workspaceId, operationId, documentId, "ready", "Chunks extracted; managed embeddings are unavailable for this request"));
@@ -417,10 +421,17 @@ export async function ingestFiles(input: {
       document.status = apiKey ? "ready" : "extracted";
       events.push(event(input.workspaceId, operationId, documentId, "ready", `${document.chunkCount} chunks available for inspection`, { current: document.chunkCount, total: document.chunkCount }));
     } catch (error) {
-      document.status = "error";
-      document.stage = "error";
-      document.error = error instanceof Error ? error.message : "Document processing failed.";
-      events.push(event(input.workspaceId, operationId, documentId, "error", document.error));
+      if (document.chunkCount && workspace.chunks.some(chunk => chunk.documentId === documentId)) {
+        document.status = "extracted";
+        document.stage = "ready";
+        document.error = `Text was extracted, but automatic embedding failed: ${error instanceof Error ? error.message : "provider unavailable"}`;
+        events.push(event(input.workspaceId, operationId, documentId, "ready", `${document.chunkCount} chunks saved; retry indexing when embeddings are available`));
+      } else {
+        document.status = "error";
+        document.stage = "error";
+        document.error = error instanceof Error ? error.message : "Document processing failed.";
+        events.push(event(input.workspaceId, operationId, documentId, "error", document.error));
+      }
     }
   }
 
@@ -442,62 +453,55 @@ export async function queryWorkspace(input: {
   topK?: number;
 }): Promise<QueryResult> {
   const workspace = getWorkspace(input.workspaceId);
-  const apiKey = configuredGeminiKey();
   const started = Date.now();
   const question = input.question.trim();
   if (!question) throw new Error("Enter a question before retrieving evidence.");
-  const indexed = workspace.chunks.filter(chunk => chunk.embedding);
-  if (!indexed.length) throw new Error("No indexed vectors are available. Process a document before querying.");
-
-  const embeddingStarted = Date.now();
+  const available = workspace.chunks;
+  if (!available.length) throw new Error("No extracted chunks are available yet. Upload a supported document first.");
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
-  if (workspace.embeddingModel && model !== workspace.embeddingModel) {
-    throw new Error(`Embedding model mismatch: this index uses ${workspace.embeddingModel}. Reprocess the sources before querying with ${model}.`);
-  }
-  const queryEmbedding = await geminiEmbed(apiKey, model, question, "RETRIEVAL_QUERY");
+  const embeddingStarted = Date.now();
+  let queryEmbedding: number[] | undefined;
+  try {
+    const key = process.env.GEMINI_API_KEY?.trim();
+    if (key && workspace.embeddingModel === model) queryEmbedding = await geminiEmbed(key, model, question, "RETRIEVAL_QUERY");
+  } catch { /* Fall back to deterministic local retrieval during provider/network errors. */ }
   const queryEmbeddingMs = Date.now() - embeddingStarted;
-  const indexDimension = indexed[0]?.embedding?.length;
-  if (indexDimension && queryEmbedding.length !== indexDimension) {
-    throw new Error(`Embedding dimension mismatch: this index uses ${indexDimension} dimensions but the query returned ${queryEmbedding.length}.`);
-  }
-  if (!workspace.projection) {
+  const indexed = queryEmbedding ? available.filter(chunk => chunk.embedding?.length === queryEmbedding!.length) : [];
+  if (indexed.length && !workspace.projection) {
     workspace.projection = fitPca(indexed.map(chunk => chunk.embedding!));
     indexed.forEach(chunk => { chunk.projection = applyPca(chunk.embedding!, workspace.projection!); });
   }
-
   const retrievalStarted = Date.now();
-  const ranked = indexed
-    .map(chunk => ({ ...chunk, rank: 0, score: cosineSimilarity(queryEmbedding, chunk.embedding!), metric: "cosine_similarity" as const }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.max(1, Math.min(input.topK || DEFAULT_TOP_K, 10)))
+  const terms = (value: string) => new Set(value.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) || []);
+  const queryTerms = terms(question);
+  const ranked = available.map(chunk => {
+    const score = queryEmbedding && chunk.embedding?.length === queryEmbedding.length
+      ? cosineSimilarity(queryEmbedding, chunk.embedding)
+      : [...terms(chunk.text)].filter(term => queryTerms.has(term)).length / Math.max(1, queryTerms.size);
+    return { ...chunk, rank: 0, score, metric: "cosine_similarity" as const };
+  }).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(input.topK || DEFAULT_TOP_K, 10)))
     .map((result, index) => ({ ...result, rank: index + 1 }));
   const results: RetrievalCandidate[] = ranked.map(({ embedding, projection, ...result }) => result);
   const retrievalMs = Date.now() - retrievalStarted;
   const generationStarted = Date.now();
-  let answer: string;
+  let answer = "";
   let status: QueryRecord["status"] = "complete";
   try {
-    const generationModel = cleanModelName(input.generationModel, "qwen/qwen-2.5-72b-instruct");
     const openRouterKey = configuredOpenRouterKey();
-    answer = openRouterKey
-      ? await openRouterGenerate(openRouterKey, generationModel, question, results)
-      : await geminiGenerate(apiKey, generationModel.startsWith("gemini-") ? generationModel : "gemini-3.5-flash", question, results);
-    if (results.length === 0 || results[0].score < 0.2) status = "insufficient";
-  } catch (error) {
-    const query: QueryRecord = {
-      id: nanoid(10), question, createdAt: now(), status: "error", citations: [], results,
-      queryProjection: applyPca(queryEmbedding, workspace.projection!), timings: { queryEmbeddingMs, retrievalMs, generationMs: Date.now() - generationStarted, totalMs: Date.now() - started }, error: error instanceof Error ? error.message : "Generation failed.",
-    };
-    workspace.queries.unshift(query);
-    throw new Error(query.error);
+    if (openRouterKey) answer = await openRouterGenerate(openRouterKey, cleanModelName(input.generationModel, "qwen/qwen-2.5-72b-instruct"), question, results);
+    else if (process.env.GEMINI_API_KEY?.trim()) answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), cleanModelName(input.generationModel, "gemini-3.5-flash"), question, results);
+    else throw new Error("No generation provider configured");
+  } catch {
+    answer = results.length
+      ? `Automated synthesis is temporarily unavailable. Here are the most relevant indexed excerpts:\n\n${results.slice(0, 3).map(result => `[${result.id}] ${result.text.slice(0, 900)}`).join("\n\n")}`
+      : "The indexed evidence is insufficient to answer this reliably. No indexed chunks matched the query terms.";
   }
-  const generationMs = Date.now() - generationStarted;
+  if (!results.length || results[0].score < 0.2) status = "insufficient";
   const citations: Citation[] = results.map(result => ({ chunkId: result.id, sourceName: result.sourceName, location: result.location, quote: result.text.slice(0, 220) }));
   const query: QueryRecord = {
-    id: nanoid(10), question, createdAt: now(), status, answer, citations,
-    results,
-    queryProjection: applyPca(queryEmbedding, workspace.projection!),
-    timings: { queryEmbeddingMs, retrievalMs, generationMs, totalMs: Date.now() - started },
+    id: nanoid(10), question, createdAt: now(), status, answer, citations, results,
+    queryProjection: queryEmbedding && workspace.projection ? applyPca(queryEmbedding, workspace.projection) : undefined,
+    timings: { queryEmbeddingMs, retrievalMs, generationMs: Date.now() - generationStarted, totalMs: Date.now() - started },
   };
   workspace.queries.unshift(query);
   return { snapshot: toSnapshot(input.workspaceId, workspace), query };
