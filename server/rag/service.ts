@@ -285,7 +285,7 @@ async function geminiGenerate(apiKey: string, model: string, question: string, r
   const prompt = [
     "You are the grounded generation stage of an academic RAG laboratory. The evidence blocks below are the only source of truth for this answer.",
     "Read and compare every supplied evidence block before answering. Synthesize the answer from those chunks; do not answer from general knowledge, assumptions, or the similarity score.",
-    "Every factual claim must be followed by one or more source IDs in square brackets, for example [doc-c001]. Never invent a source ID or citation.",
+    "Answer only from the evidence. Do not include internal chunk IDs, source IDs, square-bracket citations, or code-like identifiers in the answer; the application displays source citations separately.",
     "If the chunks do not directly support the question, say exactly: 'The indexed evidence is insufficient to answer this reliably.' Then briefly state what is missing.",
     "Be concise but complete: answer in no more than 5 sentences. Distinguish explicit evidence from a cautious inference, and label any inference as such.",
     `Question: ${question}`,
@@ -303,7 +303,7 @@ async function geminiGenerate(apiKey: string, model: string, question: string, r
   const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
   const answer = data.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("").trim();
   if (!answer) throw new Error("Generation provider returned an empty answer.");
-  return answer;
+  return stripInternalChunkIds(answer);
 }
 
 async function openRouterGenerate(apiKey: string, model: string, question: string, results: RetrievalCandidate[]): Promise<string> {
@@ -321,7 +321,7 @@ async function openRouterGenerate(apiKey: string, model: string, question: strin
       temperature: 0.2,
       max_tokens: 384,
       messages: [
-        { role: "system", content: "You are the grounded generation stage of an academic RAG laboratory. Answer only from the supplied evidence. Be concise and answer in no more than 5 sentences. If the evidence does not support a reliable answer, say the evidence is insufficient. Attach the supplied chunk IDs in square brackets after supported claims. Never invent sources." },
+        { role: "system", content: "You are the grounded generation stage of an academic RAG laboratory. Answer only from the supplied evidence. Be concise and answer in no more than 5 sentences. If the evidence does not support a reliable answer, say the evidence is insufficient. Do not include internal chunk IDs, source IDs, square-bracket citations, or code-like identifiers in the answer; the application displays source citations separately." },
         { role: "user", content: `Question: ${question}\n\nEvidence:\n${evidence || "(No evidence retrieved.)"}` },
       ],
     }),
@@ -330,7 +330,16 @@ async function openRouterGenerate(apiKey: string, model: string, question: strin
   const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
   const answer = data.choices?.[0]?.message?.content?.trim();
   if (!answer) throw new Error("OpenRouter returned an empty grounded answer.");
-  return answer;
+  return stripInternalChunkIds(answer);
+}
+
+function stripInternalChunkIds(answer: string) {
+  return answer
+    .replace(/\s*\[[^\]\n]*-c\d+[^\]\n]*\]/gi, "")
+    .replace(/`?[A-Za-z0-9_-]{6,}-c\d+`?/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function dot(a: number[], b: number[]) {
@@ -627,7 +636,7 @@ export async function queryWorkspace(input: {
   } catch {
     answerMode = "source_excerpts";
     answer = groundedResults.length
-      ? `AI synthesis is temporarily unavailable. These are source excerpts, not a generated answer:\n\n${groundedResults.slice(0, 3).map(result => `[${result.id}] ${result.text.slice(0, 900)}`).join("\n\n")}`
+      ? `AI synthesis is temporarily unavailable. These are source excerpts, not a generated answer:\n\n${groundedResults.slice(0, 3).map(result => `${result.sourceName} — ${result.location}\n${result.text.slice(0, 900)}`).join("\n\n")}`
       : "The indexed evidence is insufficient to answer this reliably. No chunks matched the query terms.";
   }
   const citations: Citation[] = groundedResults.map(result => ({ chunkId: result.id, sourceName: result.sourceName, location: result.location, quote: result.text.slice(0, 220) }));
@@ -643,11 +652,25 @@ export async function queryWorkspace(input: {
   return { snapshot: toSnapshot(input.workspaceId, workspace), query };
 }
 
-export async function indexExtractedChunks(input: { workspaceId: string; apiKey?: string; embeddingModel?: string }): Promise<IngestResult> {
+export async function indexExtractedChunks(input: {
+  workspaceId: string;
+  apiKey?: string;
+  embeddingModel?: string;
+  fallbackChunks?: ChunkRecord[];
+  fallbackDocuments?: DocumentRecord[];
+}): Promise<IngestResult> {
   const workspace = getWorkspace(input.workspaceId);
   const operationId = nanoid(12);
   const apiKey = configuredGeminiKey();
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
+  if (input.fallbackChunks?.length) {
+    const existingIds = new Set(workspace.chunks.map(chunk => chunk.id));
+    workspace.chunks.push(...input.fallbackChunks.filter(chunk => !existingIds.has(chunk.id)).map(chunk => ({ ...chunk })));
+  }
+  if (input.fallbackDocuments?.length) {
+    const existingIds = new Set(workspace.documents.map(document => document.id));
+    workspace.documents.push(...input.fallbackDocuments.filter(document => !existingIds.has(document.id)).map(document => ({ ...document })));
+  }
   const pending = workspace.chunks.filter(chunk => !chunk.embedding);
   const events: IngestResult["events"] = [];
   if (!pending.length) return { snapshot: toSnapshot(input.workspaceId, workspace), operationId, events };
