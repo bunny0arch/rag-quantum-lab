@@ -22,6 +22,13 @@ const defaultWorkspaceId = () => {
 const formatMs = (value?: number) => (typeof value === "number" ? `${value} ms` : "—");
 const formatBytes = (value: number) => value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
 const stageText = (stage: DocumentRecord["stage"]) => ({ queued: "queued", validating: "validating", extracting: "extracting", chunking: "chunking", embedding: "embedding", indexing: "indexing", ready: "ready", error: "error" })[stage];
+function compactFallbackChunks(chunks: WorkspaceSnapshot["chunks"], question: string) {
+  const queryTerms = new Set(question.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) || []);
+  return chunks.map((chunk, index) => ({
+    chunk, index,
+    overlap: [...new Set(chunk.text.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) || [])].filter(term => queryTerms.has(term)).length,
+  })).sort((a, b) => b.overlap - a.overlap || a.index - b.index).slice(0, 100).map(item => item.chunk);
+}
 function encodeFile(file: File) {
   return new Promise<{ name: string; mimeType: string; size: number; contentBase64: string }>((resolve, reject) => {
     const reader = new FileReader();
@@ -128,7 +135,7 @@ export default function Home() {
   const snapshotQuery = trpc.rag.snapshot.useQuery({ workspaceId }, { refetchOnWindowFocus: false });
   const ingestMutation = trpc.rag.ingest.useMutation({ onMutate: () => { setLastEvent("Upload accepted; streaming extraction progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const indexMutation = trpc.rag.indexExtracted.useMutation({ onMutate: () => { setLastEvent("Re-index accepted; streaming embedding progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
-  const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(previous => previous ? { ...result.snapshot, documents: previous.documents, chunks: previous.chunks, points: previous.points, index: previous.index, queries: [result.query, ...previous.queries.filter(queryRecord => queryRecord.id !== result.query.id)].slice(0, 100) } : result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const removeMutation = trpc.rag.removeDocument.useMutation({ onSuccess: result => { setSnapshot(result); setSelectedChunkId(undefined); } });
 
   useEffect(() => { if (snapshotQuery.data && !snapshot) setSnapshot(snapshotQuery.data); }, [snapshot, snapshotQuery.data]);
@@ -164,9 +171,9 @@ export default function Home() {
   const handleQuery = () => {
     queryMutation.mutate({
       workspaceId, question, embeddingModel, generationModel, topK,
-      fallbackChunks: current?.chunks || [],
+      fallbackChunks: compactFallbackChunks(current?.chunks || [], question),
       fallbackDocuments: current?.documents || [],
-      fallbackPoints: current?.points || [],
+      fallbackPoints: (current?.points || []).slice(0, 100),
     });
   };
 
