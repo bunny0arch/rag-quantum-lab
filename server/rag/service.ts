@@ -451,11 +451,18 @@ export async function queryWorkspace(input: {
   generationModel?: string;
   embeddingModel?: string;
   topK?: number;
+  fallbackChunks?: ChunkRecord[];
 }): Promise<QueryResult> {
   const workspace = getWorkspace(input.workspaceId);
   const started = Date.now();
   const question = input.question.trim();
   if (!question) throw new Error("Enter a question before retrieving evidence.");
+  // Vercel may route ingestion and querying to different stateless function instances.
+  // The browser's current snapshot is therefore an explicit recovery source when this
+  // instance has no in-memory workspace copy.
+  if (!workspace.chunks.length && input.fallbackChunks?.length) {
+    workspace.chunks = input.fallbackChunks.map(chunk => ({ ...chunk }));
+  }
   const available = workspace.chunks;
   if (!available.length) throw new Error("No extracted chunks are available yet. Upload a supported document first.");
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");

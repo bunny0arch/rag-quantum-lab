@@ -27,14 +27,15 @@ describe("session RAG service", () => {
   });
 
   it("answers from existing chunks without depending on embedding or generation providers", async () => {
-    const workspaceId = "service-test-local-query";
+    const uploadWorkspaceId = "service-test-local-query-upload";
+    const queryWorkspaceId = "service-test-local-query-instance";
     const geminiKey = process.env.GEMINI_API_KEY;
     const routerKey = process.env.OPENROUTER_API_KEY;
     delete process.env.GEMINI_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
-    await ingestFiles({ workspaceId, apiKey: null, files: [encoded("Quantum retrieval uses chunk vectors. Vector indexing supports evidence lookup.")] });
+    const uploaded = await ingestFiles({ workspaceId: uploadWorkspaceId, apiKey: null, files: [encoded("Quantum retrieval uses chunk vectors. Vector indexing supports evidence lookup.")] });
     try {
-      const result = await queryWorkspace({ workspaceId, question: "How does vector indexing support retrieval?", topK: 3 });
+      const result = await queryWorkspace({ workspaceId: queryWorkspaceId, question: "How does vector indexing support retrieval?", topK: 3, fallbackChunks: uploaded.snapshot.chunks });
       expect(result.query.answer).toContain("indexed excerpts");
       expect(result.query.results[0]?.text).toContain("Vector indexing");
       expect(result.query.citations.length).toBeGreaterThan(0);

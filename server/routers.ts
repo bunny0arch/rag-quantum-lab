@@ -32,6 +32,12 @@ export const appRouter = router({
       embeddingModel: z.string().trim().max(120).optional(),
       generationModel: z.string().trim().max(120).optional(),
       topK: z.number().int().min(1).max(10).optional(),
+      fallbackChunks: z.array(z.object({
+        id: z.string().min(1).max(120), documentId: z.string().min(1).max(80),
+        sourceName: z.string().max(240), location: z.string().max(500),
+        text: z.string().max(5000), charCount: z.number().int().nonnegative(),
+        embeddingDimension: z.number().int().positive().optional(),
+      })).max(10000).optional(),
     })).mutation(({ input }) => queryWorkspace(input)),
     indexExtracted: publicProcedure.input(z.object({ workspaceId, embeddingModel: z.string().trim().max(120).optional() })).mutation(({ input }) => indexExtractedChunks(input)),
     removeDocument: publicProcedure.input(z.object({ workspaceId, documentId: z.string().min(1).max(80) })).mutation(({ input }) => removeDocument(input.workspaceId, input.documentId)),
