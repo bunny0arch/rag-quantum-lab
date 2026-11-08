@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { inflateRawSync } from "node:zlib";
 import type {
   ChunkRecord,
   Citation,
@@ -19,11 +20,12 @@ const DEFAULT_CHUNK_SIZE = 780;
 const DEFAULT_OVERLAP = 120;
 const DEFAULT_TOP_K = 5;
 
- type InternalChunk = ChunkRecord & { embedding?: number[]; projection?: [number, number, number] };
- type Workspace = {
+type InternalChunk = ChunkRecord & { embedding?: number[]; projection?: [number, number, number] };
+type Workspace = {
   documents: DocumentRecord[];
   chunks: InternalChunk[];
   queries: QueryRecord[];
+  fallbackPoints?: ProjectedPoint[];
   embeddingModel?: string;
   projection?: PcaModel;
 };
@@ -80,6 +82,81 @@ function normalizeText(input: string) {
     .trim();
 }
 
+function decodeEntities(input: string) {
+  const named: Record<string, string> = { amp: "&", apos: "'", gt: ">", lt: "<", nbsp: " ", quot: '"' };
+  return input.replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
+    if (code[0] === "#") {
+      const value = code[1]?.toLowerCase() === "x" ? Number.parseInt(code.slice(2), 16) : Number.parseInt(code.slice(1), 10);
+      try { return Number.isFinite(value) ? String.fromCodePoint(value) : entity; } catch { return entity; }
+    }
+    return named[code.toLowerCase()] || entity;
+  });
+}
+
+function htmlToText(input: string) {
+  return decodeEntities(input
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<(script|style|noscript|svg)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\s*\/(p|div|h[1-6]|li|tr|section|article|table|blockquote)\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, " "));
+}
+
+function rtfToText(input: string) {
+  return input
+    .replace(/\\'[\da-f]{2}/gi, code => String.fromCharCode(Number.parseInt(code.slice(2), 16)))
+    .replace(/\\par[d]?\b|\\line\b/gi, "\n")
+    .replace(/\\tab\b/gi, "\t")
+    .replace(/\\u(-?\d+)\??/g, (_match, code: string) => String.fromCharCode(Number.parseInt(code, 10) & 0xffff))
+    .replace(/\\[a-z]+-?\d* ?/gi, "")
+    .replace(/\\([\\{}])/g, "$1")
+    .replace(/[{}]/g, "");
+}
+
+function textFromOfficeArchive(buffer: Buffer, extension: string) {
+  const endMarker = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  const end = buffer.lastIndexOf(endMarker);
+  if (end < 0 || end + 22 > buffer.length) throw new Error(`The .${extension} file is not a valid Office/OpenDocument archive.`);
+  const totalEntries = buffer.readUInt16LE(end + 10);
+  let cursor = buffer.readUInt32LE(end + 16);
+  let expandedBytes = 0;
+  const entries: Array<{ name: string; text: string }> = [];
+  for (let index = 0; index < totalEntries; index += 1) {
+    if (cursor + 46 > buffer.length || buffer.readUInt32LE(cursor) !== 0x02014b50) throw new Error(`The .${extension} archive contains an invalid directory entry.`);
+    const method = buffer.readUInt16LE(cursor + 10);
+    const compressedSize = buffer.readUInt32LE(cursor + 20);
+    const uncompressedSize = buffer.readUInt32LE(cursor + 24);
+    const nameLength = buffer.readUInt16LE(cursor + 28);
+    const extraLength = buffer.readUInt16LE(cursor + 30);
+    const commentLength = buffer.readUInt16LE(cursor + 32);
+    const localOffset = buffer.readUInt32LE(cursor + 42);
+    const name = buffer.toString("utf8", cursor + 46, cursor + 46 + nameLength);
+    const isContent = extension === "pptx"
+      ? /^ppt\/slides\/slide\d+\.xml$/i.test(name)
+      : extension === "epub" ? /\.(xhtml|html)$/i.test(name) : name === "content.xml";
+    if (isContent) {
+      if (uncompressedSize > 32 * 1024 * 1024) throw new Error(`The .${extension} file contains an unusually large document part.`);
+      expandedBytes += uncompressedSize;
+      if (expandedBytes > 64 * 1024 * 1024) throw new Error(`The .${extension} file expands beyond the safe extraction limit.`);
+      if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50) throw new Error(`The .${extension} archive contains an invalid document part.`);
+      const localNameLength = buffer.readUInt16LE(localOffset + 26);
+      const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+      const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+      const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
+      if (compressed.length !== compressedSize) throw new Error(`The .${extension} document part is truncated.`);
+      const xml = method === 0 ? compressed.toString("utf8") : method === 8 ? inflateRawSync(compressed, { maxOutputLength: 32 * 1024 * 1024 }).toString("utf8") : "";
+      if (xml) {
+        const text = extension === "pptx"
+          ? [...xml.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/gi)].map(match => decodeEntities(match[1]!.replace(/<[^>]+>/g, ""))).join(" ")
+          : htmlToText(xml);
+        if (text.trim()) entries.push({ name, text });
+      }
+    }
+    cursor += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries.sort((a, b) => a.name.localeCompare(b.name)).map(entry => entry.text).join("\n\n");
+}
+
 async function extractText(file: IngestFileInput): Promise<{ text: string; location: string }> {
   if (file.size > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MB limit.`);
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(file.contentBase64) || file.contentBase64.length % 4 === 1) {
@@ -90,6 +167,17 @@ async function extractText(file: IngestFileInput): Promise<{ text: string; locat
   if (buffer.length > MAX_FILE_BYTES) throw new Error(`File exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MB limit.`);
   const extension = extensionOf(file.name);
 
+  if (["html", "htm"].includes(extension)) {
+    return { text: normalizeText(htmlToText(new TextDecoder("utf-8", { fatal: false }).decode(buffer))), location: "HTML text" };
+  }
+  if (extension === "rtf") {
+    return { text: normalizeText(rtfToText(new TextDecoder("utf-8", { fatal: false }).decode(buffer))), location: "RTF text" };
+  }
+  if (["pptx", "odt", "odp", "epub"].includes(extension)) {
+    const text = normalizeText(textFromOfficeArchive(buffer, extension));
+    if (!text) throw new Error(`No readable text was found in this .${extension} file.`);
+    return { text, location: extension === "pptx" ? "PowerPoint slides" : `${extension.toUpperCase()} document` };
+  }
   if (["txt", "md", "markdown", "csv", "json", "html", "htm", "xml", "js", "jsx", "ts", "tsx", "py", "java", "go", "rs", "css", "scss", "yml", "yaml", "sql", "env", "log", "rst", "tex", "toml", "ini", "cfg", "conf", "sh", "bash", "c", "h", "cpp", "hpp", "rb", "php", "swift", "kt", "dart", "vue", "svelte", "graphql", "proto", "diff", "patch", "ps1", "bat", "properties", "makefile", "dockerfile"].includes(extension)) {
     return { text: normalizeText(new TextDecoder("utf-8", { fatal: false }).decode(buffer)), location: "document" };
   }
@@ -108,7 +196,7 @@ async function extractText(file: IngestFileInput): Promise<{ text: string; locat
     return { text: normalizeText(result.value), location: "DOCX body" };
   }
 
-  if (["xlsx", "xls"].includes(extension)) {
+  if (["xlsx", "xls", "ods"].includes(extension)) {
     const xlsx = await import("xlsx");
     const workbook = xlsx.read(buffer, { type: "buffer" });
     const sheets = workbook.SheetNames.map(sheetName => {
@@ -297,10 +385,10 @@ function toSnapshot(workspaceId: string, workspace: Workspace): WorkspaceSnapsho
     workspaceId,
     documents: workspace.documents,
     chunks: workspace.chunks.map(({ embedding, projection, ...chunk }) => ({ ...chunk, embeddingDimension: embedding?.length })),
-    points: indexed.map(chunk => {
+    points: indexed.length ? indexed.map(chunk => {
       const projection = chunk.projection || [0, 0, 0];
       return { chunkId: chunk.id, documentId: chunk.documentId, sourceName: chunk.sourceName, location: chunk.location, excerpt: chunk.text.slice(0, 180), x: projection[0], y: projection[1], z: projection[2] } satisfies ProjectedPoint;
-    }),
+    }) : workspace.fallbackPoints || [],
     queries: workspace.queries,
     index: {
       status: indexed.length ? "ready" : workspace.chunks.length ? "extracted" : "empty",
@@ -451,11 +539,22 @@ export async function queryWorkspace(input: {
   generationModel?: string;
   embeddingModel?: string;
   topK?: number;
+  fallbackChunks?: ChunkRecord[];
+  fallbackDocuments?: DocumentRecord[];
+  fallbackPoints?: ProjectedPoint[];
 }): Promise<QueryResult> {
   const workspace = getWorkspace(input.workspaceId);
   const started = Date.now();
   const question = input.question.trim();
   if (!question) throw new Error("Enter a question before retrieving evidence.");
+  // Vercel may route ingestion and querying to different stateless function instances.
+  // The browser's current snapshot is therefore an explicit recovery source when this
+  // instance has no in-memory workspace copy.
+  if (!workspace.chunks.length && input.fallbackChunks?.length) {
+    workspace.chunks = input.fallbackChunks.map(chunk => ({ ...chunk }));
+    workspace.documents = input.fallbackDocuments?.map(document => ({ ...document })) || [];
+    workspace.fallbackPoints = input.fallbackPoints?.map(point => ({ ...point })) || [];
+  }
   const available = workspace.chunks;
   if (!available.length) throw new Error("No extracted chunks are available yet. Upload a supported document first.");
   const model = cleanModelName(input.embeddingModel || workspace.embeddingModel, "gemini-embedding-001");
@@ -475,31 +574,37 @@ export async function queryWorkspace(input: {
   const terms = (value: string) => new Set(value.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) || []);
   const queryTerms = terms(question);
   const ranked = available.map(chunk => {
+    const hasVector = Boolean(queryEmbedding && chunk.embedding?.length === queryEmbedding.length);
     const score = queryEmbedding && chunk.embedding?.length === queryEmbedding.length
       ? cosineSimilarity(queryEmbedding, chunk.embedding)
       : [...terms(chunk.text)].filter(term => queryTerms.has(term)).length / Math.max(1, queryTerms.size);
-    return { ...chunk, rank: 0, score, metric: "cosine_similarity" as const };
-  }).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(input.topK || DEFAULT_TOP_K, 10)))
+    return { ...chunk, rank: 0, score, metric: hasVector ? "cosine_similarity" as const : "keyword_overlap" as const };
+  }).filter(result => result.score > 0).sort((a, b) => b.score - a.score).slice(0, Math.max(1, Math.min(input.topK || DEFAULT_TOP_K, 10)))
     .map((result, index) => ({ ...result, rank: index + 1 }));
   const results: RetrievalCandidate[] = ranked.map(({ embedding, projection, ...result }) => result);
   const retrievalMs = Date.now() - retrievalStarted;
   const generationStarted = Date.now();
   let answer = "";
+  let answerMode: QueryRecord["answerMode"] = "generated";
   let status: QueryRecord["status"] = "complete";
   try {
     const openRouterKey = configuredOpenRouterKey();
     if (openRouterKey) answer = await openRouterGenerate(openRouterKey, cleanModelName(input.generationModel, "qwen/qwen-2.5-72b-instruct"), question, results);
-    else if (process.env.GEMINI_API_KEY?.trim()) answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), cleanModelName(input.generationModel, "gemini-3.5-flash"), question, results);
+    else if (process.env.GEMINI_API_KEY?.trim()) {
+      const requested = cleanModelName(input.generationModel, "gemini-2.5-flash");
+      answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), requested.startsWith("gemini-") ? requested : "gemini-2.5-flash", question, results);
+    }
     else throw new Error("No generation provider configured");
   } catch {
+    answerMode = "source_excerpts";
     answer = results.length
-      ? `Automated synthesis is temporarily unavailable. Here are the most relevant indexed excerpts:\n\n${results.slice(0, 3).map(result => `[${result.id}] ${result.text.slice(0, 900)}`).join("\n\n")}`
-      : "The indexed evidence is insufficient to answer this reliably. No indexed chunks matched the query terms.";
+      ? `AI synthesis is temporarily unavailable. These are source excerpts, not a generated answer:\n\n${results.slice(0, 3).map(result => `[${result.id}] ${result.text.slice(0, 900)}`).join("\n\n")}`
+      : "The indexed evidence is insufficient to answer this reliably. No chunks matched the query terms.";
   }
-  if (!results.length || results[0].score < 0.2) status = "insufficient";
+  if (!results.length || results[0].score < (results[0]?.metric === "keyword_overlap" ? 0.15 : 0.2)) status = "insufficient";
   const citations: Citation[] = results.map(result => ({ chunkId: result.id, sourceName: result.sourceName, location: result.location, quote: result.text.slice(0, 220) }));
   const query: QueryRecord = {
-    id: nanoid(10), question, createdAt: now(), status, answer, citations, results,
+    id: nanoid(10), question, createdAt: now(), status, answer, answerMode, citations, results,
     queryProjection: queryEmbedding && workspace.projection ? applyPca(queryEmbedding, workspace.projection) : undefined,
     timings: { queryEmbeddingMs, retrievalMs, generationMs: Date.now() - generationStarted, totalMs: Date.now() - started },
   };

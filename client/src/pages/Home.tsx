@@ -22,6 +22,13 @@ const defaultWorkspaceId = () => {
 const formatMs = (value?: number) => (typeof value === "number" ? `${value} ms` : "—");
 const formatBytes = (value: number) => value < 1024 * 1024 ? `${Math.max(1, Math.round(value / 1024))} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
 const stageText = (stage: DocumentRecord["stage"]) => ({ queued: "queued", validating: "validating", extracting: "extracting", chunking: "chunking", embedding: "embedding", indexing: "indexing", ready: "ready", error: "error" })[stage];
+function compactFallbackChunks(chunks: WorkspaceSnapshot["chunks"], question: string) {
+  const queryTerms = new Set(question.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) || []);
+  return chunks.map((chunk, index) => ({
+    chunk, index,
+    overlap: [...new Set(chunk.text.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) || [])].filter(term => queryTerms.has(term)).length,
+  })).sort((a, b) => b.overlap - a.overlap || a.index - b.index).slice(0, 100).map(item => item.chunk);
+}
 function encodeFile(file: File) {
   return new Promise<{ name: string; mimeType: string; size: number; contentBase64: string }>((resolve, reject) => {
     const reader = new FileReader();
@@ -101,6 +108,7 @@ export default function Home() {
   const [question, setQuestion] = useState("");
   const [selectedChunkId, setSelectedChunkId] = useState<string>();
   const [hoveredPoint, setHoveredPoint] = useState<ProjectedPoint>();
+  const [visualizationMode, setVisualizationMode] = useState<"2d" | "3d">("3d");
   const [activeQueryId, setActiveQueryId] = useState<string>();
   const [resetToken, setResetToken] = useState(0);
   const [fitToken, setFitToken] = useState(0);
@@ -127,7 +135,7 @@ export default function Home() {
   const snapshotQuery = trpc.rag.snapshot.useQuery({ workspaceId }, { refetchOnWindowFocus: false });
   const ingestMutation = trpc.rag.ingest.useMutation({ onMutate: () => { setLastEvent("Upload accepted; streaming extraction progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Pipeline event received"); setSourceDockOpen(false); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const indexMutation = trpc.rag.indexExtracted.useMutation({ onMutate: () => { setLastEvent("Re-index accepted; streaming embedding progress"); }, onSuccess: result => { setSnapshot(result.snapshot); setLastEvent(result.events.at(-1)?.message || "Extracted chunks indexed"); setLocalError(""); }, onError: error => setLocalError(error.message) });
-  const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
+  const queryMutation = trpc.rag.query.useMutation({ onMutate: () => { setEvidenceOpen(false); }, onSuccess: result => { setSnapshot(previous => previous ? { ...result.snapshot, documents: previous.documents, chunks: previous.chunks, points: previous.points, index: previous.index, queries: [result.query, ...previous.queries.filter(queryRecord => queryRecord.id !== result.query.id)].slice(0, 100) } : result.snapshot); setActiveQueryId(result.query.id); setEvidenceOpen(true); setLastEvent(result.query.status === "insufficient" ? "Generation returned with insufficient evidence" : "Grounded answer returned from selected evidence"); setLocalError(""); }, onError: error => setLocalError(error.message) });
   const removeMutation = trpc.rag.removeDocument.useMutation({ onSuccess: result => { setSnapshot(result); setSelectedChunkId(undefined); } });
 
   useEffect(() => { if (snapshotQuery.data && !snapshot) setSnapshot(snapshotQuery.data); }, [snapshot, snapshotQuery.data]);
@@ -161,7 +169,12 @@ export default function Home() {
   }, [chunkSize, embeddingModel, ingestMutation, overlap, workspaceId]);
 
   const handleQuery = () => {
-    queryMutation.mutate({ workspaceId, question, embeddingModel, generationModel, topK });
+    queryMutation.mutate({
+      workspaceId, question, embeddingModel, generationModel, topK,
+      fallbackChunks: compactFallbackChunks(current?.chunks || [], question),
+      fallbackDocuments: current?.documents || [],
+      fallbackPoints: (current?.points || []).slice(0, 100),
+    });
   };
 
   const copy = async (content: string) => {
@@ -188,7 +201,7 @@ export default function Home() {
   return (
     <div className="lab-shell lab-shell--immersive" onPointerMove={handlePointerMove}>
       <div className="scene-viewport" aria-hidden="true">
-        <Suspense fallback={<div className="scene-loading">INITIALIZING VECTOR FIELD</div>}><EmbeddingUniverse points={current?.points || []} queryProjection={activeQuery?.queryProjection} highlightedIds={highlightedIds} selectedId={selectedChunkId} onSelect={point => setSelectedChunkId(point.chunkId)} onHover={setHoveredPoint} resetToken={resetToken} fitToken={fitToken} reducedMotion={window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || false} /></Suspense>
+        <Suspense fallback={<div className="scene-loading">INITIALIZING VECTOR FIELD</div>}><EmbeddingUniverse points={current?.points || []} queryProjection={activeQuery?.queryProjection} highlightedIds={highlightedIds} selectedId={selectedChunkId} onSelect={point => setSelectedChunkId(point.chunkId)} onHover={setHoveredPoint} resetToken={resetToken} fitToken={fitToken} reducedMotion={window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || false} onVisualizationModeChange={setVisualizationMode} /></Suspense>
         <div className="scene-vignette" />
         <div className="scene-gridline" />
       </div>
@@ -203,16 +216,16 @@ export default function Home() {
         <section id="sources" className={`source-dock ${sourceDockOpen ? "is-open" : "is-collapsed"}`} aria-label="Floating source register">
           <div className="dock-kicker"><span>01 / SOURCES</span><button onClick={() => setSourceDockOpen(value => !value)} aria-label={sourceDockOpen ? "Collapse sources" : "Expand sources"}>{sourceDockOpen ? <ChevronDown size={14} /> : <Archive size={14} />}</button></div>
           {sourceDockOpen ? <>
-            <div className="floating-drop-zone" onDragOver={event => event.preventDefault()} onDrop={onDrop}><UploadCloud size={18} strokeWidth={1.4} /><strong>Drop source</strong><span>or <label htmlFor="file-input">select files</label></span><input id="file-input" type="file" multiple hidden accept=".txt,.md,.markdown,.csv,.json,.html,.htm,.xml,.js,.jsx,.ts,.tsx,.py,.java,.go,.rs,.css,.scss,.yml,.yaml,.sql,.env,.pdf,.docx,.xlsx,.xls" onChange={event => { void ingestFiles(Array.from(event.target.files || [])); event.target.value = ""; }} /></div>
+            <div className="floating-drop-zone" onDragOver={event => event.preventDefault()} onDrop={onDrop}><UploadCloud size={18} strokeWidth={1.4} /><strong>Drop source</strong><span>or <label htmlFor="file-input">select files</label></span><input id="file-input" type="file" multiple hidden accept="*/*" onChange={event => { void ingestFiles(Array.from(event.target.files || [])); event.target.value = ""; }} /></div>
             <div className="source-dock__meta"><span>{current?.documents.length || 0} source{current?.documents.length === 1 ? "" : "s"}</span><span className="mono">{indexedCount} vectors</span></div>
-            {current?.documents.length ? <div className="floating-source-list">{current.documents.slice(0, 4).map(document => <article className="floating-source-row" key={document.id}><span className={`source-state source-state--${document.status}`} /> <div><strong title={document.name}>{document.name}</strong><small>{stageText(document.stage)} · {document.chunkCount || "—"} chunks</small></div><button onClick={() => removeMutation.mutate({ workspaceId, documentId: document.id })} aria-label={`Remove ${document.name}`}><Trash2 size={12} /></button></article>)}</div> : <div className="source-empty"><Archive size={15} /><span>Sources become chunks, then vectors.</span></div>}
+            {current?.documents.length ? <div className="floating-source-list">{current.documents.map(document => <article className="floating-source-row" key={document.id}><span className={`source-state source-state--${document.status}`} /> <div><strong title={document.name}>{document.name}</strong><small>{stageText(document.stage)} · {document.chunkCount || "—"} chunks</small></div><button onClick={() => removeMutation.mutate({ workspaceId, documentId: document.id })} aria-label={`Remove ${document.name}`}><Trash2 size={12} /></button></article>)}</div> : <div className="source-empty"><Archive size={15} /><span>Sources become chunks, then vectors.</span></div>}
             {extractedDocuments > 0 && <button className="floating-index-button" disabled={indexMutation.isPending} onClick={() => indexMutation.mutate({ workspaceId, embeddingModel })}>{indexMutation.isPending ? <Loader2 size={12} className="spin" /> : <Database size={12} />} index {extractedDocuments} extracted</button>}
           </> : <button className="source-collapsed-button" onClick={() => setSourceDockOpen(true)}><span className="source-count">{current?.documents.length || 0}</span><span>source register</span></button>}
         </section>
 
-        <section id="universe" className="universe-readout" aria-label="Embedding universe readout"><span className="eyebrow">02 / VECTOR SPACE</span><strong>{indexedCount ? `${indexedCount} indexed point${indexedCount === 1 ? "" : "s"}` : "Awaiting indexed vectors"}</strong><span>PCA-style projection · cosine ranking stays in original space</span><div className="universe-readout__actions"><button onClick={() => setResetToken(value => value + 1)} title="Reset camera"><RefreshCw size={13} /></button><button onClick={() => setFitToken(value => value + 1)} disabled={!indexedCount} title="Fit all points"><Orbit size={13} /></button></div></section>
+        <section id="universe" className="universe-readout" aria-label="Embedding universe readout"><span className="eyebrow">02 / VECTOR SPACE</span><strong>{indexedCount ? `${indexedCount} indexed point${indexedCount === 1 ? "" : "s"}` : "Awaiting indexed vectors"}</strong><span>{visualizationMode === "2d" ? "2D PCA-style projection · vector index remains high-dimensional" : "PCA-style projection · vector index remains high-dimensional"}</span><div className="universe-readout__actions"><button onClick={() => setResetToken(value => value + 1)} title="Reset camera"><RefreshCw size={13} /></button><button onClick={() => setFitToken(value => value + 1)} disabled={!indexedCount} title="Fit all points"><Orbit size={13} /></button></div></section>
 
-        <section className="floating-method" aria-label="Visualization method"><span className="mono">METHOD</span><span>HIGH-DIMENSIONAL EMBEDDINGS</span><span className="method-separator">→</span><span>3D PCA-STYLE VIEW</span></section>
+        <section className="floating-method" aria-label="Visualization method"><span className="mono">METHOD</span><span>HIGH-DIMENSIONAL EMBEDDINGS</span><span className="method-separator">→</span><span>{visualizationMode === "2d" ? "2D PCA-STYLE MAP" : "3D PCA-STYLE VIEW"}</span></section>
 
         {hoveredPoint && <div className="floating-point-tooltip"><span className="mono">{hoveredPoint.chunkId}</span><strong>{hoveredPoint.sourceName}</strong><p>{hoveredPoint.excerpt}</p></div>}
 
@@ -223,7 +236,19 @@ export default function Home() {
         {localError && <div className="floating-error"><AlertCircle size={14} /><span>{localError}</span><button onClick={() => setLocalError("")} aria-label="Dismiss error"><X size={13} /></button></div>}
 
         <section id="retrieval" className={`evidence-float ${evidenceOpen && activeQuery ? "is-open" : "is-hidden"}`} aria-label="Retrieved evidence and answer">
-          {activeQuery && <><div className="evidence-float__head"><div><span className="eyebrow">03 / EVIDENCE TRACE</span><strong>{activeQuery.results.length} candidates · {formatMs(activeQuery.timings.totalMs)} total</strong></div><button onClick={() => setEvidenceOpen(false)} aria-label="Close evidence"><X size={14} /></button></div><div className="evidence-float__question">{activeQuery.question}</div><div className="floating-results">{activeQuery.results.map(result => <button className={`floating-result ${selectedChunkId === result.id ? "is-selected" : ""}`} key={result.id} onClick={() => setSelectedChunkId(result.id)}><span className="floating-result__rank">{String(result.rank).padStart(2, "0")}</span><span><strong>{result.sourceName}</strong><small>{result.location}</small><p>{result.text.slice(0, 135)}{result.text.length > 135 ? "…" : ""}</p></span><b>{result.score.toFixed(3)}</b></button>)}</div><div className="answer-float"><div className="answer-float__status"><StatusDot tone={activeQuery.status === "insufficient" ? "warn" : "ready"} /><span>{activeQuery.status === "insufficient" ? "Insufficient evidence" : "Grounded answer"}</span><span className="mono">{formatMs(activeQuery.timings.generationMs)} generation</span></div><p>{activeQuery.answer || "No answer returned."}</p><div className="answer-float__actions"><button onClick={() => copy(activeQuery.answer || "")}><Clipboard size={12} /> copy</button><button onClick={exportAnswer}><Download size={12} /> TXT</button><button onClick={() => exportPdf(activeQuery, generationModel)}><FileText size={12} /> PDF</button></div></div><div className="query-history">{current?.queries.slice(0, 3).map(queryRecord => <button className={queryRecord.id === activeQuery.id ? "is-active" : ""} key={queryRecord.id} onClick={() => setActiveQueryId(queryRecord.id)}>{queryRecord.question.slice(0, 34)}{queryRecord.question.length > 34 ? "…" : ""}</button>)}</div></>}
+          {activeQuery && <>
+            <div className="evidence-float__head"><div><span className="eyebrow">03 / ANSWER &amp; EVIDENCE</span><strong>{activeQuery.results.length} sources · {activeQuery.results[0]?.metric === "keyword_overlap" ? "keyword overlap" : "cosine similarity"} · {formatMs(activeQuery.timings.totalMs)}</strong></div><button onClick={() => setEvidenceOpen(false)} aria-label="Close answer and evidence"><X size={14} /></button></div>
+            <div className="evidence-float__question">{activeQuery.question}</div>
+            <section className="answer-float" aria-label="Final answer" aria-live="polite">
+              <span className="answer-float__title">FINAL ANSWER</span>
+              <div className="answer-float__status"><StatusDot tone={activeQuery.status === "insufficient" ? "warn" : "ready"} /><span>{activeQuery.answerMode === "source_excerpts" ? "Source excerpts · AI synthesis unavailable" : activeQuery.status === "insufficient" ? "Insufficient evidence" : "AI-generated, evidence-grounded"}</span><span className="mono">{formatMs(activeQuery.timings.generationMs)}</span></div>
+              <p>{activeQuery.answer || "No answer returned."}</p>
+              <div className="answer-float__actions"><button onClick={() => copy(activeQuery.answer || "")}><Clipboard size={12} /> copy</button><button onClick={exportAnswer}><Download size={12} /> TXT</button><button onClick={() => exportPdf(activeQuery, generationModel)}><FileText size={12} /> PDF</button></div>
+            </section>
+            <div className="evidence-section-label"><span className="eyebrow">SUPPORTING CHUNKS</span><span className="mono">select a source to inspect</span></div>
+            <div className="floating-results">{activeQuery.results.map(result => <button className={`floating-result ${selectedChunkId === result.id ? "is-selected" : ""}`} key={result.id} onClick={() => setSelectedChunkId(result.id)}><span className="floating-result__rank">{String(result.rank).padStart(2, "0")}</span><span><strong>{result.sourceName}</strong><small>{result.location}</small><p>{result.text.slice(0, 135)}{result.text.length > 135 ? "…" : ""}</p></span><b>{result.score.toFixed(3)}</b></button>)}</div>
+            <div className="query-history">{current?.queries.slice(0, 3).map(queryRecord => <button className={queryRecord.id === activeQuery.id ? "is-active" : ""} key={queryRecord.id} onClick={() => setActiveQueryId(queryRecord.id)}>{queryRecord.question.slice(0, 34)}{queryRecord.question.length > 34 ? "…" : ""}</button>)}</div>
+          </>}
         </section>
 
         <section id="method" className="pipeline-float" aria-label="RAG pipeline state"><div className="pipeline-float__head"><span className="eyebrow">LIVE PIPELINE</span><span className={`pipeline-operation ${isBusy ? "is-running" : ""}`}>{isBusy ? "awaiting server event" : lastEvent || "idle / no event"}</span></div><div className="pipeline-track">{stages.map((stage, index) => <div className={`pipeline-node ${stageDone(stage.key) ? "is-done" : ""} ${stageActive(stage.key) ? "is-running" : ""}`} key={stage.key}><span className="pipeline-node__marker">{stageDone(stage.key) ? <Check size={10} /> : String(index + 1).padStart(2, "0")}</span><span>{stage.label}</span>{index < stages.length - 1 && <i />}</div>)}</div></section>

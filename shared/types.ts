@@ -52,7 +52,7 @@ export type ProjectedPoint = {
 export type RetrievalCandidate = ChunkRecord & {
   rank: number;
   score: number;
-  metric: "cosine_similarity";
+  metric: "cosine_similarity" | "keyword_overlap";
 };
 
 export type Citation = {
@@ -68,6 +68,7 @@ export type QueryRecord = {
   createdAt: string;
   status: "complete" | "insufficient" | "error";
   answer?: string;
+  answerMode?: "generated" | "source_excerpts";
   citations: Citation[];
   results: RetrievalCandidate[];
   queryProjection?: [number, number, number];
