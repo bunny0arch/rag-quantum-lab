@@ -101,7 +101,7 @@ export default function Home() {
   const [workspaceId] = useState(defaultWorkspaceId);
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>();
   const [embeddingModel, setEmbeddingModel] = useState("gemini-embedding-001");
-  const [generationModel, setGenerationModel] = useState("qwen/qwen-2.5-72b-instruct");
+  const [generationModel, setGenerationModel] = useState("gemini-3.1-flash-lite");
   const [chunkSize, setChunkSize] = useState(780);
   const [overlap, setOverlap] = useState(120);
   const [topK, setTopK] = useState(5);

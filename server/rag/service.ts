@@ -287,7 +287,7 @@ async function geminiGenerate(apiKey: string, model: string, question: string, r
     "Read and compare every supplied evidence block before answering. Synthesize the answer from those chunks; do not answer from general knowledge, assumptions, or the similarity score.",
     "Every factual claim must be followed by one or more source IDs in square brackets, for example [doc-c001]. Never invent a source ID or citation.",
     "If the chunks do not directly support the question, say exactly: 'The indexed evidence is insufficient to answer this reliably.' Then briefly state what is missing.",
-    "Be concise but complete. Distinguish explicit evidence from a cautious inference, and label any inference as such.",
+    "Be concise but complete: answer in no more than 5 sentences. Distinguish explicit evidence from a cautious inference, and label any inference as such.",
     `Question: ${question}`,
     "Evidence:",
     evidence || "(No evidence retrieved.)",
@@ -295,7 +295,7 @@ async function geminiGenerate(apiKey: string, model: string, question: string, r
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2 } }),
+    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 384 } }),
   });
   if (!response.ok) {
     throw new Error(`Generation provider rejected the request (${response.status}). Check the key, model, quota, or network connection.`);
@@ -319,8 +319,9 @@ async function openRouterGenerate(apiKey: string, model: string, question: strin
     body: JSON.stringify({
       model,
       temperature: 0.2,
+      max_tokens: 384,
       messages: [
-        { role: "system", content: "You are the grounded generation stage of an academic RAG laboratory. Answer only from the supplied evidence. If the evidence does not support a reliable answer, say the evidence is insufficient. Attach the supplied chunk IDs in square brackets after supported claims. Never invent sources." },
+        { role: "system", content: "You are the grounded generation stage of an academic RAG laboratory. Answer only from the supplied evidence. Be concise and answer in no more than 5 sentences. If the evidence does not support a reliable answer, say the evidence is insufficient. Attach the supplied chunk IDs in square brackets after supported claims. Never invent sources." },
         { role: "user", content: `Question: ${question}\n\nEvidence:\n${evidence || "(No evidence retrieved.)"}` },
       ],
     }),
@@ -598,13 +599,15 @@ export async function queryWorkspace(input: {
   let answerMode: QueryRecord["answerMode"] = "generated";
   let status: QueryRecord["status"] = "complete";
   try {
-    const openRouterKey = configuredOpenRouterKey();
-    if (openRouterKey) answer = await openRouterGenerate(openRouterKey, cleanModelName(input.generationModel, "qwen/qwen-2.5-72b-instruct"), question, results);
-    else if (process.env.GEMINI_API_KEY?.trim()) {
-      const requested = cleanModelName(input.generationModel, "gemini-2.5-flash");
-      answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), requested.startsWith("gemini-") ? requested : "gemini-2.5-flash", question, results);
+    const requested = cleanModelName(input.generationModel, "gemini-3.1-flash-lite");
+    if (requested.startsWith("gemini-") && process.env.GEMINI_API_KEY?.trim()) {
+      answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), requested, question, results);
+    } else {
+      const openRouterKey = configuredOpenRouterKey();
+      if (openRouterKey) answer = await openRouterGenerate(openRouterKey, requested, question, results);
+      else if (process.env.GEMINI_API_KEY?.trim()) answer = await geminiGenerate(process.env.GEMINI_API_KEY.trim(), "gemini-3.1-flash-lite", question, results);
+      else throw new Error("No generation provider configured");
     }
-    else throw new Error("No generation provider configured");
   } catch {
     answerMode = "source_excerpts";
     answer = results.length
